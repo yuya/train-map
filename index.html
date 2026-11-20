@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Urbanist:wght@600;800;900&family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=LINE+Seed+JP:wght@400;700;800&family=Archivo:wght@600;800;900&display=swap">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.16.0/dist/maplibre-gl.css">
 <style>
 /*
   VOICE  : 車内のドア上案内表示のように、一目で「次は どこ・あと何分」
@@ -31,7 +31,7 @@
 html.fj-plex{--font-j:'IBM Plex Sans JP'}
 @media (prefers-color-scheme:dark){
   :root{--bg:#121519;--ink:#eef1f4;--mut:#a5afb9;--faint:#6d7781;--rule:#2a3036;--card:#181c21;--acc:#6aa8ff;color-scheme:dark}
-  .leaflet-container{background:#1a1d21}
+  .maplibregl-map{background:#1a1d21}
 }
 *{box-sizing:border-box;min-width:0}
 html,body{height:100%;margin:0}
@@ -48,9 +48,10 @@ html.jl:lang(ja) .sub{font-weight:500}
 html.jl:lang(ja) .lab{font-weight:500}
 
 #map{position:fixed;inset:0;z-index:0}
-.leaflet-container{font-family:var(--font-u)}
-.leaflet-control-attribution{font-size:10px;font-family:var(--font-u)}
-.leaflet-bottom.leaflet-right{bottom:calc(var(--sheetH,0px) + 4px)}
+.maplibregl-map{font-family:var(--font-u);background:#f2f1ed}
+.maplibregl-ctrl-attrib{font-size:10px;font-family:var(--font-u)}
+.maplibregl-ctrl-bottom-left{bottom:calc(var(--sheetH,0px) + 4px);right:70px}
+.maplibregl-ctrl-bottom-left .maplibregl-ctrl{margin:0 0 4px 6px}
 
 /* 上の「次は」カード */
 #now{position:fixed;z-index:500;top:calc(10px + var(--st));left:10px;right:10px;max-width:460px;margin:auto;
@@ -97,7 +98,7 @@ html.jl:lang(ja) .lab{font-weight:500}
   #sheet{left:12px;right:auto;width:440px;bottom:12px;border-radius:20px;max-height:calc(100vh - 220px)}
   #now{left:12px;right:auto;width:440px;margin:0}
   #fabs{bottom:24px}
-  .leaflet-bottom.leaflet-right{bottom:0}
+  .maplibregl-ctrl-bottom-left{bottom:0;left:464px}
 }
 h2{font-size:15px;margin:6px 0 8px;font-family:var(--font-d);font-weight:800}
 html.jl:lang(ja) h2{font-weight:700}
@@ -161,8 +162,19 @@ html.jl:lang(ja) .st .in b{font-weight:700}
 .me.est i{background:#e8a21a}.me.est i::after{border-color:#e8a21a}
 @keyframes pu{0%{transform:scale(.5);opacity:.7}100%{transform:scale(1.4);opacity:0}}
 @media (prefers-reduced-motion:reduce){.me i::after,.st.flash .in i{animation:none}.train{transition:none}}
-.leaflet-popup-content-wrapper{border-radius:14px}
-.leaflet-popup-content{margin:12px 14px;font-family:var(--font-u);min-width:220px}
+.maplibregl-popup-content{border-radius:14px;padding:12px 14px;font-family:var(--font-u);min-width:240px;background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
+.maplibregl-popup-tip{border-top-color:var(--card)!important;border-bottom-color:var(--card)!important}
+.maplibregl-popup-close-button{font-size:22px;width:36px;height:36px;color:var(--mut)}
+.st,.me{z-index:1}
+#banner{position:fixed;z-index:560;left:10px;right:70px;bottom:calc(var(--sheetH,140px) + 12px);max-width:460px;background:#1d2329;color:#fff;border-radius:14px;padding:12px 12px 12px 16px;font-size:13.5px;line-height:1.55;display:flex;gap:10px;align-items:flex-start;box-shadow:var(--shadow)}
+#banner[hidden]{display:none}
+#banner .bd{flex:1}
+#banner .st2{display:flex;align-items:center;gap:8px;margin-top:6px;color:#b9c3cc;font-size:12.5px}
+#banner .bar2{flex:1;height:4px;border-radius:4px;background:#3a434c;overflow:hidden}
+#banner .bar2 i{display:block;height:100%;width:0;background:#6aa8ff;transition:width .4s}
+#banner .x{width:36px;height:36px;border-radius:50%;color:#fff;font-size:20px;line-height:36px;text-align:center;flex:none}
+@media (min-width:900px){#banner{left:auto;right:76px;bottom:24px;margin:0;width:420px}}
+#segStyle button:disabled{opacity:.4}
 .pop h3{font-family:var(--font-d);font-weight:800;font-size:20px;margin:0 0 6px}
 html.jl:lang(ja) .pop h3{font-weight:700}
 .pop .pick{min-height:44px;padding:7px 2px}
@@ -214,7 +226,7 @@ body.picking #map{cursor:crosshair}
 <div id="dlg" hidden>
   <div class="box" role="dialog" aria-label="設定">
     <div class="hd"><h2 style="font-size:20px;margin:0">表示と位置</h2><button class="btn" data-act="close">閉じる</button></div>
-    <div class="grp"><h3>地図の種類（国土地理院）</h3>
+    <div class="grp"><h3>地図の種類（国土地理院）<span id="photoNote"></span></h3>
       <div class="seg" id="segStyle"><button data-style="std">標準</button><button data-style="pale">淡色</button><button data-style="photo">写真</button></div></div>
     <div class="grp"><h3>和文フォント</h3>
       <div class="seg" id="segFont"><button data-font="line">LINE Seed JP</button><button data-font="plex">IBM Plex Sans JP</button></div></div>
@@ -226,12 +238,17 @@ body.picking #map{cursor:crosshair}
     <div class="grp"><h3>データ</h3>
       <p class="note" id="dataInfo" style="margin:0 0 8px">路線データを確認しています…</p>
       <button class="btn" data-act="clearcache">保存データを削除して再読み込み</button></div>
-    <p class="note">地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>／路線・駅：<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>（Overpass API経由）。<br>「あと何分」は駅間距離・種別・GPS速度からの推定で、公式の時刻表・遅延情報ではありません。地下区間などGPSが届かないときは推定で進み、駅をタップして「ここにいる」で補正できます。</p>
+    <p class="note">地図：<a href="https://github.com/gsi-cyberjapan/optimal_bvmap" target="_blank" rel="noopener">国土地理院最適化ベクトルタイル</a>（写真は<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>）／路線・駅：<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>（Overpass API経由）。<br>「あと何分」は駅間距離・種別・GPS速度からの推定で、公式の時刻表・遅延情報ではありません。地下区間などGPSが届かないときは推定で進み、駅をタップして「ここにいる」で補正できます。</p>
   </div>
+</div>
+<div id="banner" hidden role="status" aria-live="polite">
+  <div class="bd"><div id="bnMsg">初回は地図の読み込みに少し時間がかかります。表示した地域は端末に保存され、次回からは圏外でも表示できます。Wi-Fi 環境での利用がおすすめです。</div>
+    <div class="st2" id="bnSt"><span id="bnTx">地図データを読み込み中です…</span><span class="bar2"><i id="bnBar"></i></span></div></div>
+  <button class="x" id="bnX" aria-label="閉じる">×</button>
 </div>
 <div id="toast" hidden></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pmtiles@4.5.0/dist/pmtiles.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

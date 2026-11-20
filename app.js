@@ -1,3 +1,4 @@
+import * as maplibregl from 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 import * as G from './geo.js';
 const { dist, clamp, project, idxAt, pointAt, cumul } = G;
 
@@ -20,29 +21,111 @@ const metaReady = fetch('data/meta.json', { cache: 'no-cache' }).then(r => (r.ok
 /* ---------- 状態 ---------- */
 const S = {
   pos: null, src: 'gps', routes: new Map(), groups: new Map(), stations: new Map(), byName: new Map(),
-  nearKeys: new Set(), nearCenter: null, showFar: LS.get('far', false), style: LS.get('mapStyle', 'pale'),
+  nearKeys: new Set(), nearCenter: null, showFar: LS.get('far', false), style: LS.get('mapStyle', 'pale'), popup: null,
   ride: null, follow: true, hist: new Map(), demo: null, demoMult: LS.get('mult', 5), speeds: [], loading: 0, lastSug: '',
   mode: 'static', meta: null,
 };
 
-/* ---------- 地図 ---------- */
-const startView = LS.get('view', null);
-const map = L.map('map', { zoomControl: false, preferCanvas: true, minZoom: 5, maxZoom: 19 })
-  .setView(startView ? startView.c : [35.6812, 139.7671], startView ? startView.z : 14);
-map.attributionControl.setPrefix(false);
-map.createPane('lines').style.zIndex = 410;
-map.createPane('ride').style.zIndex = 420;
-const rLines = L.canvas({ pane: 'lines', padding: 0.5 }), rRide = L.canvas({ pane: 'ride', padding: 0.5 });
-const ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a> | 路線・駅 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
-const TILES = { std: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', pale: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', photo: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg' };
-let base = null;
-function setStyle(k) {
-  if (!TILES[k]) k = 'pale'; S.style = k; LS.set('mapStyle', k);
-  if (base) map.removeLayer(base);
-  base = L.tileLayer(TILES[k], { maxNativeZoom: 18, maxZoom: 19, attribution: ATTR, crossOrigin: 'anonymous' }).addTo(map);
-  document.querySelectorAll('#segStyle button').forEach(b => b.setAttribute('aria-pressed', b.dataset.style === k));
+/* ---------- 地図（MapLibre GL ＋ 国土地理院最適化ベクトルタイル） ---------- */
+// ベースマップの PMTiles。置き場所を変えるときはここ1か所を書き換える
+const BASE_PMTILES = 'https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/optimal_bvmap-v1.pmtiles';
+const BASE_STYLE = 'https://gsi-cyberjapan.github.io/optimal_bvmap/style/std.json';
+const PHOTO_TILES = 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg';
+const VT_ATTR = '<a href="https://github.com/gsi-cyberjapan/optimal_bvmap" target="_blank" rel="noopener">国土地理院最適化ベクトルタイル</a>';
+const PHOTO_ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル（写真）</a>';
+const RAIL_ATTR = '路線・駅 © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
+const EMPTY = { type: 'FeatureCollection', features: [] };
+const BLANK_STYLE = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#f2f1ed' } }] };
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol('pmtiles', protocol.tile);
+
+// 表示位置。旧版（Leaflet）のズームはベクタ地図より1大きいので変換する
+const startView = LS.get('view2', null) || (v => (v ? { c: v.c, z: v.z - 1 } : null))(LS.get('view', null));
+const map = new maplibregl.Map({
+  container: 'map', style: BLANK_STYLE,
+  center: startView ? [startView.c[1], startView.c[0]] : [139.7671, 35.6812], zoom: startView ? startView.z : 13,
+  minZoom: 4, maxZoom: 18.5, dragRotate: false, pitchWithRotate: false, touchPitch: false, attributionControl: false,
+  localIdeographFontFamily: "'Hiragino Sans','Hiragino Kaku Gothic ProN','Noto Sans JP','Yu Gothic',sans-serif",
+});
+map.touchZoomRotate.disableRotation();
+map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: RAIL_ATTR }), 'bottom-left');
+const LZ = () => map.getZoom() + 1; // 旧版と同じ感覚のズーム値（しきい値の判定用）
+
+/* 淡色化：スタイルの色を彩度を落として明るくする（文字は読める濃さに） */
+function parseColor(c) {
+  let m;
+  if ((m = /^#([0-9a-f]{3,8})$/i.exec(c))) {
+    let h = m[1]; if (h.length <= 4) h = [...h].map(x => x + x).join('');
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1 };
+  }
+  if ((m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/i.exec(c))) {
+    const a = m[4] == null ? 1 : m[4].endsWith('%') ? parseFloat(m[4]) / 100 : +m[4];
+    return { r: +m[1], g: +m[2], b: +m[3], a };
+  }
+  return null;
 }
-setStyle(S.style);
+function paleColor(c, text) {
+  const p = parseColor(c); if (!p) return c;
+  const r = p.r / 255, g = p.g / 255, b = p.b / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, sat = 0, l = (mx + mn) / 2;
+  if (mx !== mn) { const d = mx - mn; sat = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn); h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h /= 6; }
+  if (text) { sat *= 0.25; l = Math.min(l, 0.42); } else { sat *= 0.35; l = l + (1 - l) * 0.55; }
+  const f = n => { const k = (n + h * 12) % 12, a = sat * Math.min(l, 1 - l); return Math.round((l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255); };
+  return `rgba(${f(0)},${f(8)},${f(4)},${+p.a.toFixed(3)})`;
+}
+const mapColors = (v, fn) => (typeof v === 'string' ? fn(v) : Array.isArray(v) ? v.map(x => mapColors(x, fn)) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mapColors(x, fn)])) : v);
+function paleize(style) {
+  for (const l of style.layers) {
+    if (!l.paint) continue;
+    for (const k of Object.keys(l.paint)) if (/color$/.test(k)) l.paint[k] = mapColors(l.paint[k], c => paleColor(c, k === 'text-color'));
+  }
+}
+let baseStyle = null;
+async function getBaseStyle() {
+  if (!baseStyle) { const r = await fetch(BASE_STYLE); if (!r.ok) throw new Error('style ' + r.status); baseStyle = await r.json(); }
+  return baseStyle;
+}
+async function styleFor(k) {
+  if (k === 'photo') return { version: 8, sources: { photo: { type: 'raster', tiles: [PHOTO_TILES], tileSize: 256, maxzoom: 18, attribution: PHOTO_ATTR } }, layers: [{ id: 'photo', type: 'raster', source: 'photo' }] };
+  const s = structuredClone(await getBaseStyle());
+  for (const src of Object.values(s.sources)) if (src.type === 'vector') { src.tiles = [`pmtiles://${BASE_PMTILES}/{z}/{x}/{y}`]; delete src.url; src.attribution = VT_ATTR; }
+  if (k === 'pale') paleize(s);
+  return s;
+}
+let styleSeq = 0;
+async function setStyle(k) {
+  if (!['std', 'pale', 'photo'].includes(k)) k = 'pale';
+  if (k === 'photo' && !navigator.onLine) { toast('写真の地図はオフラインでは選べません'); return; }
+  S.style = k; LS.set('mapStyle', k);
+  document.querySelectorAll('#segStyle button').forEach(b => b.setAttribute('aria-pressed', b.dataset.style === k));
+  const seq = ++styleSeq;
+  try { const st = await styleFor(k); if (seq === styleSeq) { map.setStyle(st, { diff: false }); baseReady = true; } }
+  catch (e) { console.warn(e); toast('地図のスタイルを読み込めませんでした', { label: '再試行', fn: () => setStyle(k) }); banner.fail(); }
+}
+let baseReady = false;
+function updatePhotoAvail() {
+  const b = document.querySelector('#segStyle button[data-style="photo"]'); if (!b) return;
+  b.disabled = !navigator.onLine; $('#photoNote').textContent = navigator.onLine ? '' : '　写真はオフライン中は選べません';
+}
+addEventListener('online', updatePhotoAvail); addEventListener('offline', updatePhotoAvail);
+
+/* 自前の線（路線・乗車中の路線・現在地の精度円）。スタイルを替えるたびに載せ直す */
+function addOverlays() {
+  if (map.getSource('lines')) return;
+  map.addSource('acc', { type: 'geojson', data: EMPTY });
+  map.addSource('lines', { type: 'geojson', data: EMPTY });
+  map.addSource('ride', { type: 'geojson', data: EMPTY });
+  const round = { 'line-cap': 'round', 'line-join': 'round' };
+  map.addLayer({ id: 'acc-fill', type: 'fill', source: 'acc', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.08 } });
+  map.addLayer({ id: 'acc-line', type: 'line', source: 'acc', paint: { 'line-color': '#1a73e8', 'line-width': 1, 'line-opacity': 0.5 } });
+  map.addLayer({ id: 'lines-casing', type: 'line', source: 'lines', layout: round, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': ['case', ['get', 'dim'], 0, 0.95] } });
+  map.addLayer({ id: 'lines-main', type: 'line', source: 'lines', layout: round, paint: { 'line-color': ['get', 'colour'], 'line-width': ['case', ['get', 'dim'], 3, 4.5], 'line-opacity': ['case', ['get', 'dim'], 0.12, 1] } });
+  map.addLayer({ id: 'ride-casing', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'all'], layout: round, paint: { 'line-color': '#ffffff', 'line-width': 13 } });
+  map.addLayer({ id: 'ride-behind', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'behind'], layout: round, paint: { 'line-color': '#9aa3ad', 'line-width': 8 } });
+  map.addLayer({ id: 'ride-ahead', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'ahead'], layout: round, paint: { 'line-color': ['get', 'colour'], 'line-width': 8 } });
+  drawLines(); drawMe();
+}
+map.on('style.load', addOverlays);
 
 /* ---------- データ：路線・駅の登録 ---------- */
 function stationFor(sid, name, lat, lon) {
@@ -62,9 +145,9 @@ function addRoute(r) {
   const lats = r.chain.map(p => p[0]), lons = r.chain.map(p => p[1]);
   r.bbox = [Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)];
   let g = S.groups.get(r.key);
-  if (!g) { g = { key: r.key, name: r.lineName, colour: r.colour || G.hashColour(r.key), routes: [], layer: null }; S.groups.set(r.key, g); }
+  if (!g) { g = { key: r.key, name: r.lineName, colour: r.colour || G.hashColour(r.key), routes: [], ll: null }; S.groups.set(r.key, g); }
   if (!r.colour) r.colour = g.colour;
-  g.routes.push(r); if (g.layer) { g.layer.remove(); g.layer = null; }
+  g.routes.push(r); g.ll = null;
   for (const s of r.stops) { const st = stationFor(s.sid, s.name, s.lat, s.lon); st.keys.add(r.key); st.routes.add(r.id); s.st = st; }
   S.routes.set(r.id, r);
   return r;
@@ -171,10 +254,11 @@ let farBusy = false; const farBoxes = [];
 async function loadFar() {
   if (!S.showFar || farBusy) return;
   const minZ = S.mode === 'static' ? 11 : 12;
-  if (map.getZoom() < minZ) { toast('遠くの路線は、もう少し拡大すると読み込みます'); return; }
-  const b = map.getBounds();
-  if (farBoxes.some(x => x.contains(b))) return;
-  const big = b.pad(S.mode === 'static' ? 0.15 : 0.3);
+  if (LZ() < minZ) { toast('遠くの路線は、もう少し拡大すると読み込みます'); return; }
+  const mb = map.getBounds(), b = { s: mb.getSouth(), w: mb.getWest(), n: mb.getNorth(), e: mb.getEast() };
+  if (farBoxes.some(x => x.s <= b.s && x.w <= b.w && x.n >= b.n && x.e >= b.e)) return;
+  const pf = S.mode === 'static' ? 0.15 : 0.3, dy = (b.n - b.s) * pf, dx = (b.e - b.w) * pf;
+  const big = { s: b.s - dy, w: b.w - dx, n: b.n + dy, e: b.e + dx, getSouth() { return this.s; }, getWest() { return this.w; }, getNorth() { return this.n; }, getEast() { return this.e; } };
   farBusy = true; S.loading++; renderTop();
   try {
     await metaReady;
@@ -192,69 +276,60 @@ async function loadFar() {
 
 /* ---------- 線と駅の描画 ---------- */
 const groupVisible = g => !!g && (S.ride ? (S.ride.route.key === g.key || S.showFar) : (S.showFar || S.nearKeys.has(g.key)));
-let rideLayer = null, rideAhead = null, rideBehind = null;
+const toLL = ch => ch.map(p => [p[1], p[0]]);
 function drawLines() {
-  const rideKey = S.ride && S.ride.route.key;
+  const src = map.getSource('lines'); if (!src) return;
+  const rideKey = S.ride && S.ride.route.key, feats = [];
   for (const g of S.groups.values()) {
-    const vis = groupVisible(g);
-    if (vis && !g.layer) {
-      const seen = new Set(), lines = [];
-      for (const r of g.routes) { const k = r.shape || r.id; if (!seen.has(k)) { seen.add(k); lines.push(r.chain); } }
-      g.casing = L.polyline(lines, { renderer: rLines, color: '#fff', weight: 8, opacity: 0.95, interactive: false, lineCap: 'round' });
-      g.main = L.polyline(lines, { renderer: rLines, color: g.colour, weight: 4.5, opacity: 1, interactive: false, lineCap: 'round' });
-      g.layer = L.layerGroup([g.casing, g.main]);
-    }
-    if (!g.layer) continue;
-    if (vis && !map.hasLayer(g.layer)) g.layer.addTo(map);
-    if (!vis && map.hasLayer(g.layer)) g.layer.remove();
-    const dim = S.ride && g.key !== rideKey;
-    g.main.setStyle({ opacity: dim ? 0.12 : 1, weight: dim ? 3 : 4.5 }); g.casing.setStyle({ opacity: dim ? 0 : 0.95 });
+    if (!groupVisible(g)) continue;
+    if (!g.ll) { const seen = new Set(); g.ll = []; for (const r of g.routes) { const k = r.shape || r.id; if (!seen.has(k)) { seen.add(k); g.ll.push(toLL(r.chain)); } } }
+    feats.push({ type: 'Feature', properties: { colour: g.colour, dim: !!(S.ride && g.key !== rideKey) }, geometry: { type: 'MultiLineString', coordinates: g.ll } });
   }
-  if (rideLayer) { rideLayer.remove(); rideLayer = null; }
-  if (S.ride) {
-    const r = S.ride.route;
-    rideLayer = L.layerGroup([
-      L.polyline(r.chain, { renderer: rRide, color: '#fff', weight: 13, opacity: 1, interactive: false }),
-      (rideBehind = L.polyline([], { renderer: rRide, color: '#9aa3ad', weight: 8, interactive: false })),
-      (rideAhead = L.polyline(r.chain, { renderer: rRide, color: r.colour, weight: 8, interactive: false })),
-    ]).addTo(map);
-    updateRideLine();
-  }
+  feats.sort((a, b) => b.properties.dim - a.properties.dim); // 薄い線を下に
+  src.setData({ type: 'FeatureCollection', features: feats });
+  updateRideLine();
 }
 function updateRideLine() {
-  if (!S.ride || !rideAhead) return;
+  const src = map.getSource('ride'); if (!src) return;
+  if (!S.ride) { src.setData(EMPTY); return; }
   const r = S.ride.route, s = S.ride.s, i = idxAt(r.cum, s), p = pointAt(r.chain, r.cum, s);
-  rideBehind.setLatLngs(r.chain.slice(0, i + 1).concat([p])); rideAhead.setLatLngs([p].concat(r.chain.slice(i + 1)));
+  if (!r.ll) r.ll = toLL(r.chain);
+  const P = [p[1], p[0]], line = (part, coords) => ({ type: 'Feature', properties: { part, colour: r.colour }, geometry: { type: 'LineString', coordinates: coords.length > 1 ? coords : [P, P] } });
+  src.setData({ type: 'FeatureCollection', features: [line('all', r.ll), line('behind', r.ll.slice(0, i + 1).concat([P])), line('ahead', [P].concat(r.ll.slice(i + 1)))] });
 }
 const stMarks = new Map();
 function textW(s, fs) { let w = 0; for (const c of s) w += c.charCodeAt(0) > 255 ? fs : fs * 0.6; return w; }
 const stColour = st => { for (const k of st.keys) { const g = S.groups.get(k); if (g && groupVisible(g)) return g.colour; } const g = S.groups.get([...st.keys][0]); return g ? g.colour : '#555'; };
 function updateLabels() {
-  const z = map.getZoom(), b = map.getBounds().pad(0.15), R = S.ride;
+  const z = LZ(), R = S.ride, cv = map.getContainer(), W = cv.clientWidth, H = cv.clientHeight, pad = 0.15 * Math.max(W, H);
   const rideSt = new Map();
   if (R) { const nx = nextInfo(R); R.route.stops.forEach((st, i) => rideSt.set(st.st, { i, past: i < (nx.k ?? Infinity) && nx.at !== i, next: nx.at === i || (nx.at == null && i === nx.k) })); }
   const me = S.pos ? [S.pos.lat, S.pos.lon] : [map.getCenter().lat, map.getCenter().lng];
   let cand = [];
   for (const st of S.stations.values()) {
-    if (!b.contains([st.lat, st.lon])) continue;
-    if (rideSt.has(st) || (z >= 11 && [...st.keys].some(k => groupVisible(S.groups.get(k))))) cand.push(st);
+    if (!(rideSt.has(st) || (z >= 11 && [...st.keys].some(k => groupVisible(S.groups.get(k)))))) continue;
+    const pt = map.project([st.lon, st.lat]);
+    if (pt.x < -pad || pt.x > W + pad || pt.y < -pad || pt.y > H + pad) continue;
+    st.pt = pt; cand.push(st);
   }
   cand.forEach(st => { st.pr = (rideSt.has(st) ? 0 : 1e7) + dist(me, [st.lat, st.lon]) - st.keys.size * 400 - (rideSt.get(st)?.next ? 1e8 : 0); });
   cand.sort((a, b) => a.pr - b.pr);
-  if (cand.length > 500) cand = cand.slice(0, 500);
+  if (cand.length > 400) cand = cand.slice(0, 400);
   const keep = new Set(cand), boxes = [];
   for (const [st, m] of stMarks) if (!keep.has(st)) { m.remove(); stMarks.delete(st); }
   for (const st of cand) {
     const rs = rideSt.get(st), c = rs ? R.route.colour : stColour(st);
     let m = stMarks.get(st);
     if (!m) {
-      m = L.marker([st.lat, st.lon], { icon: L.divIcon({ className: 'st', html: `<div class="in"><i></i><b>${esc(st.name)}</b></div>`, iconSize: null }), keyboard: false, riseOnHover: true });
-      m.on('click', () => onStationTap(st)); m.addTo(map); stMarks.set(st, m);
+      const el = document.createElement('div'); el.className = 'st';
+      el.innerHTML = `<div class="in"><i></i><b>${esc(st.name)}</b></div>`;
+      el.addEventListener('click', e => { e.stopPropagation(); onStationTap(st); });
+      m = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([st.lon, st.lat]).addTo(map); stMarks.set(st, m);
     }
-    const el = m.getElement(); if (!el) continue;
+    const el = m.getElement();
     el.querySelector('.in').style.setProperty('--c', c);
     const fs = rs && rs.next ? 17 : rs ? 15 : 13.5;
-    const pt = map.latLngToContainerPoint([st.lat, st.lon]), w = textW(st.name, fs) + 26, h = fs + 12;
+    const pt = st.pt, w = textW(st.name, fs) + 26, h = fs + 12;
     let side = null;
     if (z >= 12 || rs) {
       const R1 = { x: pt.x - 7, y: pt.y - h / 2, w, h }, R2 = { x: pt.x - w + 7, y: pt.y - h / 2, w, h };
@@ -263,30 +338,34 @@ function updateLabels() {
     }
     el.classList.toggle('nolab', !side); el.classList.toggle('L', side === 'L');
     el.classList.toggle('on', !!rs); el.classList.toggle('past', !!(rs && rs.past)); el.classList.toggle('next', !!(rs && rs.next));
-    m.setZIndexOffset(rs && rs.next ? 900 : rs ? 500 : side ? 100 : 0);
+    el.style.zIndex = rs && rs.next ? 4 : rs ? 3 : side ? 2 : 1;
   }
 }
-let meMark = null, accCirc = null;
+let meMark = null;
+function circlePoly(lat, lon, r) {
+  const pts = [], kx = 111320 * Math.cos(lat * G.rad);
+  for (let i = 0; i <= 48; i++) { const a = (i / 48) * 2 * Math.PI; pts.push([lon + (r * Math.cos(a)) / kx, lat + (r * Math.sin(a)) / 110540]); }
+  return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [pts] } };
+}
 function drawMe() {
   let p = S.pos ? [S.pos.lat, S.pos.lon] : null;
   if (S.ride) p = pointAt(S.ride.route.chain, S.ride.route.cum, S.ride.s);
   if (!p) return;
-  if (!meMark) {
-    meMark = L.marker(p, { icon: L.divIcon({ className: 'me', html: '<i></i>', iconSize: null }), interactive: false, zIndexOffset: 2000 }).addTo(map);
-    accCirc = L.circle(p, { radius: 10, color: '#1a73e8', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(map);
-  }
-  meMark.setLatLng(p);
-  meMark.getElement() && meMark.getElement().classList.toggle('est', !!(S.ride && S.ride.mode === 'est'));
-  if (S.pos && !S.ride) { accCirc.setLatLng([S.pos.lat, S.pos.lon]).setRadius(Math.min(S.pos.acc || 10, 2000)); accCirc.setStyle({ opacity: 1, fillOpacity: 0.08 }); }
-  else accCirc.setStyle({ opacity: 0, fillOpacity: 0 });
+  if (!meMark) { const el = document.createElement('div'); el.className = 'me'; el.innerHTML = '<i></i>'; el.style.zIndex = 5; meMark = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([p[1], p[0]]).addTo(map); }
+  meMark.setLngLat([p[1], p[0]]);
+  meMark.getElement().classList.toggle('est', !!(S.ride && S.ride.mode === 'est'));
+  const acc = map.getSource('acc');
+  if (acc) acc.setData(S.pos && !S.ride ? { type: 'FeatureCollection', features: [circlePoly(S.pos.lat, S.pos.lon, Math.min(S.pos.acc || 10, 2000))] } : EMPTY);
   if (S.follow) followTo(p);
 }
+function viewPadding() {
+  const wide = window.innerWidth >= 900;
+  return { top: $('#now').offsetHeight + 10, bottom: wide ? 0 : $('#sheet').offsetHeight, left: wide ? 460 : 0, right: 0 };
+}
 function followTo(p, force) {
-  const z = map.getZoom(), pt = map.project(p, z), wide = window.innerWidth >= 900;
-  const top = $('#now').offsetHeight + 10, sh = wide ? 0 : $('#sheet').offsetHeight;
-  pt.y += (sh - top) / 2; if (wide) pt.x -= 230;
-  const tgt = map.unproject(pt, z);
-  if (force || map.latLngToContainerPoint(p).distanceTo(map.latLngToContainerPoint(map.getCenter())) > 4) map.panTo(tgt, { animate: true, duration: 0.6 });
+  const pad = viewPadding(), cv = map.getContainer(), W = cv.clientWidth, H = cv.clientHeight;
+  const cx = pad.left + (W - pad.left - pad.right) / 2, cy = pad.top + (H - pad.top - pad.bottom) / 2, pt = map.project([p[1], p[0]]);
+  if (force || Math.hypot(pt.x - cx, pt.y - cy) > 4) map.easeTo({ center: [p[1], p[0]], padding: pad, duration: 600 });
 }
 
 /* ---------- 走行モデル ---------- */
@@ -314,9 +393,9 @@ function startRide(r, k) {
   if (k != null) s = r.stops[k].s;
   else if (S.pos) { const p = project(r.chain, r.cum, [S.pos.lat, S.pos.lon]); if (p.d < 400) s = p.s; }
   S.ride = { route: r, s, t: now, mode: 'est', atK: k != null ? k : null, dwellUntil: k != null ? now + DWELL[r.kind] * 1000 : 0, sel: null };
-  map.closePopup(); S.follow = true; $('#bLoc').classList.add('on'); $('#sheet').classList.remove('min');
+  closePopup(); S.follow = true; $('#bLoc').classList.add('on'); $('#sheet').classList.remove('min');
   drawLines(); renderSheet(true); rideStep();
-  if (map.getZoom() < 14) map.setZoom(14);
+  if (LZ() < 14) map.setZoom(13);
 }
 function endRide() { S.ride = null; stopDemo(); drawLines(); renderSheet(true); renderTop(); updateLabels(); drawMe(); }
 function rideStep() {
@@ -473,15 +552,17 @@ function onStationTap(st) {
   }
   const rs = [...st.routes].map(id => S.routes.get(id)).filter(r => r && r.stops.findIndex(x => x.st === st) < r.stops.length - 1);
   const seen = new Set(), items = rs.filter(r => { const s = r.key + r.svc + r.to; if (seen.has(s)) return false; seen.add(s); return true; }).slice(0, 10);
-  L.popup({ maxWidth: 300, autoPanPaddingTopLeft: [10, $('#now').offsetHeight + 20] }).setLatLng([st.lat, st.lon]).setContent(
+  closePopup();
+  S.popup = new maplibregl.Popup({ maxWidth: '300px', offset: 14 }).setLngLat([st.lon, st.lat]).setHTML(
     `<div class="pop"><h3>${esc(st.name)}</h3><div class="sub" style="font-size:12px;margin-bottom:4px">この駅から乗る（方面を選択）</div>${items.map(r => {
       const k = r.stops.findIndex(x => x.st === st);
       return `<button class="pick" style="--c:${esc(r.colour)}" data-act="ride" data-r="${r.id}" data-k="${k}"><span class="bar"></span><span class="tx"><b>${esc(r.lineName)}</b><span class="sub">${esc(dirText(r))}・次は${esc(r.stops[k + 1].name)}</span></span></button>`;
-    }).join('') || '<p class="empty">この駅から先の路線データがありません</p>'}</div>`).openOn(map);
+    }).join('') || '<p class="empty">この駅から先の路線データがありません</p>'}</div>`).addTo(map);
 }
+function closePopup() { if (S.popup) { S.popup.remove(); S.popup = null; } }
 function flash(st) { const m = stMarks.get(st), el = m && m.getElement(); if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
 const unfollow = () => { S.follow = false; $('#bLoc').classList.remove('on'); };
-function flyToStation(st, z = 15) { unfollow(); map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), z), { duration: 0.7 }); setTimeout(() => flash(st), 750); }
+function flyToStation(st, z = 15) { unfollow(); map.flyTo({ center: [st.lon, st.lat], zoom: Math.max(map.getZoom(), z - 1), padding: viewPadding(), duration: 700 }); setTimeout(() => flash(st), 750); }
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]');
   if (!b) {
@@ -512,7 +593,7 @@ $('#now').addEventListener('click', () => {
 $('#bLoc').addEventListener('click', () => {
   S.follow = true; $('#bLoc').classList.add('on');
   const p = S.ride ? pointAt(S.ride.route.chain, S.ride.route.cum, S.ride.s) : S.pos ? [S.pos.lat, S.pos.lon] : null;
-  if (p) { if (map.getZoom() < 14) map.setZoom(15, { animate: false }); followTo(p, true); } else { toast('現在地がまだわかりません'); startGps(); }
+  if (p) { if (LZ() < 14) map.setZoom(14); followTo(p, true); } else { toast('現在地がまだわかりません'); startGps(); }
 });
 $('#bFar').addEventListener('click', () => { S.showFar = !S.showFar; LS.set('far', S.showFar); $('#bFar').setAttribute('aria-pressed', S.showFar); drawLines(); updateLabels(); renderSheet(true); if (S.showFar) loadFar(); });
 $('#bFar').setAttribute('aria-pressed', S.showFar);
@@ -534,11 +615,11 @@ $('#segSrc').addEventListener('click', e => { const b = e.target.closest('button
 function setMult(m) { S.demoMult = m; LS.set('mult', m); document.querySelectorAll('#segDemo button').forEach(b => b.setAttribute('aria-pressed', +b.dataset.mult === m)); }
 setMult(S.demoMult);
 $('#segDemo').addEventListener('click', e => { const b = e.target.closest('button'); b && setMult(+b.dataset.mult); });
-map.on('click', e => { if (S.src !== 'manual') return; onPos({ lat: e.latlng.lat, lon: e.latlng.lng, acc: 15, speed: 0, t: Date.now() }, true); });
+map.on('click', e => { if (S.src !== 'manual') return; onPos({ lat: e.lngLat.lat, lon: e.lngLat.lng, acc: 15, speed: 0, t: Date.now() }, true); });
 map.on('dragstart', unfollow);
 let mvT = null;
-map.on('moveend zoomend', () => {
-  updateLabels(); LS.set('view', { c: [map.getCenter().lat, map.getCenter().lng], z: map.getZoom() });
+map.on('moveend', () => {
+  updateLabels(); LS.set('view2', { c: [map.getCenter().lat, map.getCenter().lng], z: map.getZoom() });
   clearTimeout(mvT); mvT = setTimeout(() => { if (S.showFar) loadFar(); if (!S.pos && !S.nearCenter) loadNear(map.getCenter().lat, map.getCenter().lng); }, 600);
 });
 function sheetH() { document.documentElement.style.setProperty('--sheetH', (window.innerWidth >= 900 ? 0 : $('#sheet').offsetHeight) + 'px'); }
@@ -603,14 +684,34 @@ function demoStep() {
   onPos({ lat: p[0] + (Math.random() - 0.5) * 0.00008, lon: p[1] + (Math.random() - 0.5) * 0.0001, acc: 12, speed: v, t: now, demo: true });
 }
 
+/* ---------- 初回だけの案内（地図データの読み込み） ---------- */
+const banner = (() => {
+  const el = $('#banner'), tx = $('#bnTx'), bar = $('#bnBar');
+  let active = !LS.get('firstRunDone', false), req = 0, got = 0, failed = false, doneT = null;
+  const finish = () => { LS.set('firstRunDone', true); active = false; el.hidden = true; };
+  const upd = () => { if (!active || failed) return; bar.style.width = (req ? Math.min(100, (got / req) * 100) : 5) + '%'; tx.textContent = '地図データを読み込み中です…'; };
+  if (active) el.hidden = false;
+  $('#bnX').addEventListener('click', finish);
+  map.on('dataloading', e => { if (active && e.dataType === 'source' && e.tile) { req++; upd(); } });
+  map.on('data', e => { if (active && e.dataType === 'source' && e.tile) { got++; upd(); } });
+  map.on('idle', () => {
+    if (!active || failed || !baseReady || !got) return;
+    bar.style.width = '100%'; tx.textContent = '読み込みが完了しました';
+    clearTimeout(doneT); doneT = setTimeout(finish, 2500);
+  });
+  const fail = () => { if (!active) return; failed = true; clearTimeout(doneT); tx.textContent = '読み込みに失敗しました。通信環境の良い場所で再読み込みしてください'; bar.style.width = '0'; };
+  map.on('error', e => { if (active && e.sourceId && e.sourceId !== 'lines' && e.sourceId !== 'ride' && e.sourceId !== 'acc') fail(); });
+  return { fail };
+})();
+
 /* ---------- 起動 ---------- */
 function afterData() { drawLines(); updateLabels(); renderSheet(true); renderTop(); }
 setInterval(() => { if (S.demo) demoStep(); if (S.ride) rideStep(); }, 1000);
-renderTop(); renderSheet(true); sheetH();
+renderTop(); renderSheet(true); sheetH(); updatePhotoAvail(); setStyle(S.style);
 startGps();
 await metaReady;
 $('#dataInfo').textContent = S.meta
   ? `路線データ：${new Date(S.meta.v).toLocaleDateString('ja-JP')} 作成（${S.meta.routes.toLocaleString()}系統・${S.meta.stations.toLocaleString()}駅）。一度見た地域は端末に保存され、次回から通信なしで表示します。`
   : '路線データ：事前生成データが見つからないため、OpenStreetMap（Overpass API）から直接取得しています（時間がかかります）。';
 setTimeout(() => { if (!S.nearCenter && !nearBusy) { const c = map.getCenter(); loadNear(c.lat, c.lng); } }, S.pos ? 0 : 4000);
-window.__S = S;
+window.__S = S; window.__map = map;
