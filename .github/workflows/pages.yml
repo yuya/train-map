@@ -26,8 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -38,36 +38,42 @@ jobs:
       # 路線データは月に1回だけ作る（コードの更新では作り直さない）
       - name: Restore rail data
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: data
-          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/build-data.mjs') }}
+          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/*') }}
           restore-keys: |
             rail-data-${{ steps.month.outputs.ym }}-
             rail-data-
 
+      # Geofabrik の日本全体ファイル（毎日更新）から鉄道だけを抜き出して変換する
       - name: Build rail data from OpenStreetMap
         id: build
         if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'schedule' || inputs.rebuild
         continue-on-error: true   # 失敗しても前回のデータで公開を続ける
-        run: node scripts/build-data.mjs --out data-new && rm -rf data && mv data-new data
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+          curl -fsSL --retry 5 --retry-delay 30 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          ls -lh japan.osm.pbf
+          scripts/extract-rail.sh japan.osm.pbf rail.opl
+          rm japan.osm.pbf
+          node --max-old-space-size=8192 scripts/build-data.mjs --opl rail.opl --out data-new
+          rm -rf data && mv data-new data
 
       - name: Save rail data
         if: steps.build.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: data
-          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/build-data.mjs') }}
+          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/*') }}
 
       - name: Assemble site
         run: |
           mkdir -p _site
           cp index.html app.js geo.js sw.js _site/
-          cp -r data _site/data
-          touch _site/.nojekyll
-          du -sh _site/data && ls _site/data/t | wc -l
+          if [ -f data/meta.json ]; then cp -r data _site/data; cat data/meta.json; du -sh _site/data; else echo '::warning::路線データが無いため、Overpass 直接取得モードで公開します'; fi
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 

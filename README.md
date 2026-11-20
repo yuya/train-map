@@ -20,11 +20,11 @@
 位置情報は https（または localhost）で開いたときしか使えません。
 
 - **GitHub Pages**：Settings → Pages の Source を **GitHub Actions** にします。`main` へのプッシュで `.github/workflows/pages.yml` が動き、路線データの生成と公開をまとめて行います。
-- **ローカル**：`npm run build-data -- --prefs 13`（東京都だけ）で `data/` を作り、`npm run serve` で http://localhost:8000 を開きます。`data/` が無いときは Overpass API から直接取得する遅いモードで動きます。設定の「地図をタップして指定」と「デモ走行」でも動作を確認できます。
+- **ローカル**：osmium-tool を入れて `scripts/extract-rail.sh japan-latest.osm.pbf rail.opl` → `node scripts/build-data.mjs --opl rail.opl --out data` で `data/` を作り（小さく試すなら `npm run build-data -- --prefs 13` で東京都だけを Overpass から）、`npm run serve` で http://localhost:8000 を開きます。`data/` が無いときは Overpass API から直接取得する遅いモードで動きます。設定の「地図をタップして指定」と「デモ走行」でも動作を確認できます。
 
 ## しくみ（読み込みを軽くする工夫）
 
-- **路線データは事前に生成**：`scripts/build-data.mjs` が GitHub Actions 上で全国の鉄道路線（OpenStreetMap の route リレーション）を取得し、静的ファイルに変換します。
+- **路線データは事前に生成**：GitHub Actions 上で、[Geofabrik](https://download.geofabrik.de/asia/japan.html) の日本全体の OSM ファイルから鉄道の系統（route リレーション）だけを抜き出し（`scripts/extract-rail.sh`、osmium-tool を使用）、`scripts/build-data.mjs` で静的ファイルに変換します。
   - 月1回作り直し、それ以外のデプロイではキャッシュを使い回します。
   - 生成に失敗したときは、前回のデータのまま公開を続けます。
   - 手動で作り直すときは、Actions の「Run workflow」で `rebuild` にチェックを入れます。

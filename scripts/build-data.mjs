@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-// 全国の鉄道路線データを OpenStreetMap（Overpass API）から取得し、
-// アプリが読む静的ファイル（data/）に変換する。GitHub Actions で月1回実行。
+// 全国の鉄道路線データ（OpenStreetMap）を、アプリが読む静的ファイル（data/）に変換する。
+// GitHub Actions で月1回実行。
 //
-//   node scripts/build-data.mjs --out _site/data            全国
-//   node scripts/build-data.mjs --out _site/data --prefs 13 東京都だけ（試験用）
-//   node scripts/build-data.mjs --out data --mock mock.json  手元のJSONで試す
+//   node scripts/build-data.mjs --opl rail.opl --out data   osmium で抜き出した OPL から（本番）
+//   node scripts/build-data.mjs --out data --prefs 13        Overpass API から東京都だけ（手元の試験用）
+//   node scripts/build-data.mjs --out data --mock mock.json  Overpass 形式の JSON から
+//
+// rail.opl の作り方（scripts/extract-rail.sh）:
+//   osmium tags-filter japan-latest.osm.pbf r/route=train,subway,light_rail,monorail,tram r/route_master=... -o rail.osm.pbf
+//   osmium add-locations-to-ways rail.osm.pbf -o rail-loc.osm.pbf
+//   osmium cat rail-loc.osm.pbf -f opl,add_metadata=false,locations_on_ways=true -o rail.opl
 //
 // 出力:
 //   meta.json          生成日時・件数・タイル寸法
@@ -14,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import readline from 'node:readline';
 import * as G from '../geo.js';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, arr) => (v.startsWith('--') ? a.concat([[v.slice(2), arr[i + 1] && !arr[i + 1].startsWith('--') ? arr[i + 1] : true]]) : a), []));
@@ -44,10 +50,41 @@ async function overpass(q) {
   throw last;
 }
 
-const mock = args.mock ? JSON.parse(fs.readFileSync(args.mock, 'utf8')) : null;
+/* OPL（osmium のテキスト形式）を Overpass 形式の要素列に変換 */
+async function readOpl(file) {
+  const un = s => (s.includes('%') ? s.replace(/%([0-9a-fA-F]+)%/g, (_, h) => String.fromCodePoint(parseInt(h, 16))) : s);
+  const tagsOf = f => { const t = {}; if (f.length > 1) for (const kv of f.slice(1).split(',')) { const i = kv.indexOf('='); t[un(kv.slice(0, i))] = un(kv.slice(i + 1)); } return t; };
+  const elements = []; let n = 0;
+  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue; n++;
+    const f = line.split(' '), kind = f[0][0], id = +f[0].slice(1);
+    let tags = {}, x = null, y = null, nds = null, mem = null;
+    for (const fl of f.slice(1)) {
+      const c = fl[0];
+      if (c === 'T') tags = tagsOf(fl);
+      else if (c === 'x') x = +fl.slice(1); else if (c === 'y') y = +fl.slice(1);
+      else if (c === 'N') nds = fl.slice(1); else if (c === 'M') mem = fl.slice(1);
+    }
+    if (kind === 'n') { if (x != null && y != null) elements.push({ type: 'node', id, lat: y, lon: x, tags }); }
+    else if (kind === 'w') {
+      const geometry = [];
+      if (nds) for (const nd of nds.split(',')) { const m = /x(-?[\d.]+)y(-?[\d.]+)/.exec(nd); if (m) geometry.push({ lat: +m[2], lon: +m[1] }); }
+      if (geometry.length > 1) elements.push({ type: 'way', id, geometry });
+    } else if (kind === 'r') {
+      const members = [];
+      if (mem) for (const m of mem.split(',')) { const at = m.indexOf('@'); members.push({ type: { n: 'node', w: 'way', r: 'relation' }[m[0]], ref: +m.slice(1, at), role: un(m.slice(at + 1)) }); }
+      elements.push({ type: 'relation', id, tags, members });
+    }
+  }
+  log('OPL lines', n, 'elements', elements.length);
+  return { elements };
+}
+
+const mock = args.opl ? await readOpl(args.opl) : args.mock ? JSON.parse(fs.readFileSync(args.mock, 'utf8')) : null;
 
 async function listRouteIds() {
-  if (mock) return mock.elements.filter(e => e.type === 'relation' && e.tags && e.tags.type === 'route').map(e => e.id);
+  if (mock) return mock.elements.filter(e => e.type === 'relation' && e.tags && e.tags.type === 'route' && G.ROUTE_RE.test(e.tags.route || '')).map(e => e.id);
   const prefs = args.prefs ? String(args.prefs).split(',').map(Number) : Array.from({ length: 47 }, (_, i) => i + 1);
   const ids = new Set();
   for (const p of prefs) {
@@ -68,8 +105,9 @@ async function fetchBatch(ids) {
 const routes = [];
 const ids = await listRouteIds();
 log('route relations:', ids.length);
-for (let i = 0; i < ids.length; i += BATCH) {
-  const want = new Set(ids.slice(i, i + BATCH));
+const step = mock ? ids.length : BATCH;
+for (let i = 0; i < ids.length; i += step) {
+  const want = new Set(ids.slice(i, i + step));
   const j = await fetchBatch([...want]);
   const nodes = new Map(), ways = new Map(), masterOf = new Map(), rels = [];
   for (const e of j.elements || []) {
@@ -91,7 +129,7 @@ for (let i = 0; i < ids.length; i += BATCH) {
       routes.push(b);
     } catch (e) { log('skip', r.id, e.message); }
   }
-  log(`batch ${i / BATCH + 1}/${Math.ceil(ids.length / BATCH)} → routes ${routes.length}`);
+  log(`batch ${i / step + 1}/${Math.ceil(ids.length / step)} → routes ${routes.length}`);
   if (mock) break;
   await sleep(2000);
 }
