@@ -116,6 +116,8 @@ function addOverlays() {
   map.addSource('lines', { type: 'geojson', data: EMPTY });
   map.addSource('ride', { type: 'geojson', data: EMPTY });
   const round = { 'line-cap': 'round', 'line-join': 'round' };
+  // 乗車中はベースマップ全体に白い膜をかけて、道路などを薄くする（自前の線はその上に描く）
+  map.addLayer({ id: 'veil', type: 'background', paint: { 'background-color': '#ffffff', 'background-opacity': veilOpacity(), 'background-opacity-transition': { duration: 400 } } });
   map.addLayer({ id: 'acc-fill', type: 'fill', source: 'acc', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.08 } });
   map.addLayer({ id: 'acc-line', type: 'line', source: 'acc', paint: { 'line-color': '#1a73e8', 'line-width': 1, 'line-opacity': 0.5 } });
   map.addLayer({ id: 'lines-casing', type: 'line', source: 'lines', layout: round, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': ['case', ['get', 'dim'], 0, 0.95] } });
@@ -277,8 +279,10 @@ async function loadFar() {
 /* ---------- 線と駅の描画 ---------- */
 const groupVisible = g => !!g && (S.ride ? (S.ride.route.key === g.key || S.showFar) : (S.showFar || S.nearKeys.has(g.key)));
 const toLL = ch => ch.map(p => [p[1], p[0]]);
+const veilOpacity = () => (S.ride ? (S.style === 'photo' ? 0.35 : 0.55) : 0);
 function drawLines() {
   const src = map.getSource('lines'); if (!src) return;
+  if (map.getLayer('veil')) map.setPaintProperty('veil', 'background-opacity', veilOpacity());
   const rideKey = S.ride && S.ride.route.key, feats = [];
   for (const g of S.groups.values()) {
     if (!groupVisible(g)) continue;
