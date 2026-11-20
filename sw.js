@@ -3,7 +3,7 @@
 //  - 路線データ data/：保存版を優先。meta.json の版が変わったら作り直す
 //  - ベースマップ PMTiles：Range リクエストを範囲ごとに保存（Cache API は 206 を保存できないため 200 に包む）
 //  - 写真タイル・ライブラリ・フォント・地図スタイル：保存版を優先
-const SHELL = 'shell-v4', DATA = 'data', PMT = 'pmtiles-v1', TILES = 'tiles-v2', LIBS = 'libs-v2';
+const SHELL = 'shell-v5', DATA = 'data', PMT = 'pmtiles-v1', TILES = 'tiles-v2', LIBS = 'libs-v2';
 const KEEP = [SHELL, DATA, PMT, TILES, LIBS];
 const TILE_MAX = 3000, PMT_MAX = 8000;
 
@@ -20,7 +20,8 @@ self.addEventListener('activate', e => {
 
 async function networkFirst(req, cacheName) {
   const c = await caches.open(cacheName);
-  try { const res = await fetch(req); if (res.ok) c.put(req, res.clone()); return res; }
+  // ブラウザの HTTP キャッシュ（GitHub Pages は10分）を使わず、毎回サーバーに更新を確かめる
+  try { const res = await fetch(req, { cache: 'no-cache' }); if (res.ok) c.put(req, res.clone()); return res; }
   catch (e) { const hit = await c.match(req, { ignoreSearch: true }); if (hit) return hit; throw e; }
 }
 async function cacheFirst(req, cacheName, trim) {
