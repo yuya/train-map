@@ -90,7 +90,9 @@ html.jl:lang(ja) .lab{font-weight:500}
 #sheet.min{max-height:calc(84px + var(--sb))}
 #grab{height:26px;flex:none;display:grid;place-items:center;width:100%}
 #grab::before{content:"";width:40px;height:5px;border-radius:9px;background:var(--rule)}
-#sbody{overflow-y:auto;overscroll-behavior:contain;padding:0 16px 14px}
+#sbody{overflow-y:auto;overscroll-behavior:contain;padding:0 16px calc(14px + var(--sb))}
+@media (max-width:899px) and (pointer:coarse){#sbody{padding-bottom:calc(76px + var(--sb))}}
+#sheet.min .train{display:none}
 @media (min-width:900px){
   #sheet{left:12px;right:auto;width:440px;bottom:12px;border-radius:20px;max-height:calc(100vh - 220px)}
   #now{left:12px;right:auto;width:440px;margin:0}

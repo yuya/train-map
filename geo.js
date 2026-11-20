@@ -27,8 +27,15 @@ export function pointAt(ch, cum, s) {
 /* ---- OSM のタグ解釈 ---- */
 export const ROUTE_RE = /^(train|subway|light_rail|monorail|tram)$/;
 export const isStopTags = t => t && (/^(station|halt|stop|tram_stop)$/.test(t.railway || '') || /^(stop_position|station)$/.test(t.public_transport || ''));
+export const hasJa = s => /[\u3040-\u30ff\u3400-\u9fff]/.test(s || '');
+/* 日本語の名前を優先（name:ja → name） */
+export const jaName = t => (t && (t['name:ja'] || t.name)) || '';
 export const cleanName = n => (n || '').replace(/[\s　]*[（(][^）)]*[）)]\s*$/, '').replace(/[\s　]*\d+番(線|のりば).*$/, '').replace(/駅$/, '').trim();
-export const baseLine = n => (n || '').replace(/[\s　]*[（(].*$/, '').replace(/[\s　]+(上り|下り|内回り|外回り|.*→.*|.*方面).*$/, '').trim();
+export const baseLine = n => (n || '')
+  .replace(/[\s　]*[（(].*$/, '')
+  .replace(/[\s　]*[:：].*(→|↔|⇔|<=>|=>|->|～|〜).*$/, '')
+  .replace(/[\s　]+\S+[\s　]*(→|↔|⇔|<=>|=>|->)[\s　]*\S+.*$/, '')
+  .replace(/[\s　]+(上り|下り|内回り|外回り|.*方面).*$/, '').trim();
 export const SERVICE = /(臨時|快速特急|通勤特急|特急|快速急行|通勤急行|区間急行|急行|通勤準急|準急|特別快速|通勤快速|区間快速|新快速|快速|区間準急|各駅停車|各停|普通|ライナー|のぞみ|ひかり|こだま|はやぶさ|やまびこ|なすの|とき|たにがわ|かがやき|はくたか|あさま|つばさ|こまち|みずほ|さくら|つばめ)/;
 export function hashColour(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 60% 42%)`; }
 export function lineKind(t, name) {
@@ -62,14 +69,14 @@ export function assemble(ways, ids) {
 export function makeNameNear(nodes) {
   const grid = new Map(), K = 0.005;
   for (const n of nodes.values()) {
-    if (!n.tags || !n.tags.name || !isStopTags(n.tags)) continue;
+    if (!n.tags || !jaName(n.tags) || !isStopTags(n.tags)) continue;
     const k = Math.floor(n.lat / K) + ',' + Math.floor(n.lon / K);
     (grid.get(k) || grid.set(k, []).get(k)).push(n);
   }
   return n => {
     let best = null, bd = 350; const y = Math.floor(n.lat / K), x = Math.floor(n.lon / K);
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const m of grid.get((y + dy) + ',' + (x + dx)) || []) {
-      const d = dist([n.lat, n.lon], [m.lat, m.lon]); if (d < bd) { bd = d; best = m.tags.name; }
+      const d = dist([n.lat, n.lon], [m.lat, m.lon]); if (d < bd) { bd = d; best = jaName(m.tags); }
     }
     return best;
   };
@@ -92,8 +99,8 @@ export function placeStops(chain, stops) {
 /* OSM の route リレーション1本 → 路線オブジェクト */
 export function buildRoute(r, { nodes, ways, masterOf, nameNear }) {
   const t = r.tags || {}, m = masterOf.get(r.id), mt = m ? m.tags || {} : {};
-  const name = t.name || t.ref || '路線';
-  const lineName = mt.name || baseLine(name) || name;
+  const name = jaName(t) || t.ref || '路線';
+  let lineName = baseLine(jaName(mt)) || baseLine(name) || name;
   const key = m ? 'm' + m.id : (t.operator || '') + '|' + lineName;
   const wayIds = r.members.filter(x => x.type === 'way' && !/platform/.test(x.role)).map(x => x.ref);
   let sIds = r.members.filter(x => x.type === 'node' && /^stop/.test(x.role)).map(x => x.ref);
@@ -102,16 +109,21 @@ export function buildRoute(r, { nodes, ways, masterOf, nameNear }) {
   const stops = [];
   for (const id of sIds) {
     const n = nodes.get(id); if (!n) continue;
-    const nm = cleanName((n.tags && n.tags.name) || nameNear(n) || ''); if (!nm) continue;
+    const nm = cleanName(jaName(n.tags) || nameNear(n) || ''); if (!nm) continue;
     if (stops.length && stops[stops.length - 1].name === nm) continue;
     stops.push({ name: nm, lat: n.lat, lon: n.lon, s: 0 });
   }
   if (stops.length < 2) return null;
+  // 英語だけの名前は、日本語の事業者名＋始点〜終点に置き換える
+  if (!hasJa(lineName)) {
+    const op = [t['operator:ja'], t.operator, mt['operator:ja'], mt.operator, t['network:ja'], t.network].find(hasJa);
+    if (op) lineName = `${op}（${stops[0].name}〜${stops[stops.length - 1].name}）`;
+  }
   const { chain } = placeStops(assemble(ways, wayIds), stops);
   return {
     id: r.id, name, lineName, key, colour: t.colour || mt.colour || null,
     svc: t.service || (name.match(SERVICE) || [])[0] || '',
-    to: cleanName(t.to) || stops[stops.length - 1].name,
+    to: cleanName(hasJa(t['to:ja']) ? t['to:ja'] : hasJa(t.to) ? t.to : '') || stops[stops.length - 1].name,
     kind: lineKind(t, name), loop: stops[0].name === stops[stops.length - 1].name,
     chain, stops, wayIds,
   };

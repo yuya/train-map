@@ -20,7 +20,7 @@ const metaReady = fetch('data/meta.json', { cache: 'no-cache' }).then(r => (r.ok
 /* ---------- 状態 ---------- */
 const S = {
   pos: null, src: 'gps', routes: new Map(), groups: new Map(), stations: new Map(), byName: new Map(),
-  nearKeys: new Set(), nearCenter: null, showFar: LS.get('far', false), style: LS.get('style', 'std'),
+  nearKeys: new Set(), nearCenter: null, showFar: LS.get('far', false), style: LS.get('mapStyle', 'pale'),
   ride: null, follow: true, hist: new Map(), demo: null, demoMult: LS.get('mult', 5), speeds: [], loading: 0, lastSug: '',
   mode: 'static', meta: null,
 };
@@ -37,7 +37,7 @@ const ATTR = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="
 const TILES = { std: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', pale: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', photo: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg' };
 let base = null;
 function setStyle(k) {
-  if (!TILES[k]) k = 'std'; S.style = k; LS.set('style', k);
+  if (!TILES[k]) k = 'pale'; S.style = k; LS.set('mapStyle', k);
   if (base) map.removeLayer(base);
   base = L.tileLayer(TILES[k], { maxNativeZoom: 18, maxZoom: 19, attribution: ATTR, crossOrigin: 'anonymous' }).addTo(map);
   document.querySelectorAll('#segStyle button').forEach(b => b.setAttribute('aria-pressed', b.dataset.style === k));
@@ -191,7 +191,7 @@ async function loadFar() {
 }
 
 /* ---------- 線と駅の描画 ---------- */
-const groupVisible = g => !!g && (S.showFar || S.nearKeys.has(g.key) || (S.ride && S.ride.route.key === g.key));
+const groupVisible = g => !!g && (S.ride ? (S.ride.route.key === g.key || S.showFar) : (S.showFar || S.nearKeys.has(g.key)));
 let rideLayer = null, rideAhead = null, rideBehind = null;
 function drawLines() {
   const rideKey = S.ride && S.ride.route.key;
@@ -208,7 +208,7 @@ function drawLines() {
     if (vis && !map.hasLayer(g.layer)) g.layer.addTo(map);
     if (!vis && map.hasLayer(g.layer)) g.layer.remove();
     const dim = S.ride && g.key !== rideKey;
-    g.main.setStyle({ opacity: dim ? 0.35 : 1, weight: dim ? 3.5 : 4.5 }); g.casing.setStyle({ opacity: dim ? 0.5 : 0.95 });
+    g.main.setStyle({ opacity: dim ? 0.12 : 1, weight: dim ? 3 : 4.5 }); g.casing.setStyle({ opacity: dim ? 0 : 0.95 });
   }
   if (rideLayer) { rideLayer.remove(); rideLayer = null; }
   if (S.ride) {
@@ -362,8 +362,14 @@ function candidates() {
     out.push({ r, d: pr.d, s: pr.s, k, score: pr.d - (ds > 40 ? 30 : 0), moving: ds > 40 });
   }
   out.sort((a, b) => a.score - b.score);
-  const seen = new Set();
-  return out.filter(c => { const sig = c.r.key + '|' + c.r.svc + '|' + c.r.to; if (seen.has(sig)) return false; seen.add(sig); return true; }).slice(0, 8);
+  // 同じ路線で次の駅も同じ＝同じ向き。行き先違いはまとめて「A・B方面」にする
+  const merged = new Map();
+  for (const c of out) {
+    const sig = c.r.key + '|' + c.r.svc + '|' + c.r.stops[c.k].name;
+    const m = merged.get(sig);
+    if (m) { m.tos.add(c.r.to); m.moving = m.moving || c.moving; } else merged.set(sig, { ...c, tos: new Set([c.r.to]) });
+  }
+  return [...merged.values()].slice(0, 8);
 }
 function nearbyStations(n) {
   const p = S.pos ? [S.pos.lat, S.pos.lon] : [map.getCenter().lat, map.getCenter().lng], out = [];
@@ -376,7 +382,7 @@ const dirText = r => `${r.svc ? r.svc + '・' : ''}${r.to}${r.loop ? 'まで' : 
 function pickHTML(c, top) {
   const r = c.r;
   return `<button class="pick${top ? ' top' : ''}" style="--c:${esc(r.colour)}" data-act="ride" data-r="${r.id}"><span class="bar"></span>
-    <span class="tx"><b>${esc(r.lineName)}</b><span class="sub">${esc(dirText(r))}・次は${esc(r.stops[c.k].name)}</span></span>
+    <span class="tx"><b>${esc(r.lineName)}</b><span class="sub">${esc((r.svc ? r.svc + '・' : '') + [...c.tos].slice(0, 3).join('・') + (r.loop ? 'まで' : '方面'))}・次は${esc(r.stops[c.k].name)}</span></span>
     <span class="r">${c.moving ? '進行方向' : ''}</span></button>`;
 }
 
