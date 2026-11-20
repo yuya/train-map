@@ -49,7 +49,8 @@ const map = new maplibregl.Map({
 });
 map.touchZoomRotate.disableRotation();
 map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: RAIL_ATTR }), 'bottom-left');
-const LZ = () => map.getZoom() + 1; // 旧版と同じ感覚のズーム値（しきい値の判定用）
+const LZ = () => map.getZoom() + 1;
+map.once('load', () => { const a = document.querySelector('.maplibregl-ctrl-attrib'); a && a.classList.remove('maplibregl-compact-show'); }); // 旧版と同じ感覚のズーム値（しきい値の判定用）
 
 /* 淡色化：スタイルの色を彩度を落として明るくする（文字は読める濃さに） */
 function parseColor(c) {
@@ -397,7 +398,7 @@ function startRide(r, k) {
   if (k != null) s = r.stops[k].s;
   else if (S.pos) { const p = project(r.chain, r.cum, [S.pos.lat, S.pos.lon]); if (p.d < 400) s = p.s; }
   S.ride = { route: r, s, t: now, mode: 'est', atK: k != null ? k : null, dwellUntil: k != null ? now + DWELL[r.kind] * 1000 : 0, sel: null };
-  closePopup(); S.follow = true; $('#bLoc').classList.add('on'); $('#sheet').classList.remove('min');
+  closePopup(); S.follow = true; $('#bLoc').classList.add('on'); $('#sheet').classList.add('min');
   drawLines(); renderSheet(true); rideStep();
   if (LZ() < 14) map.setZoom(13);
 }
@@ -471,33 +472,35 @@ function pickHTML(c, top) {
 
 /* ---------- 画面 ---------- */
 function renderTop() {
-  const R = S.ride, nL = $('#nLine'), nB = $('#nBadge'), nLead = $('#nLead'), nName = $('#nName'), nEta = $('#nEta'), nFoot = $('#nFoot'), card = $('#now');
+  const R = S.ride, nL = $('#nLine'), nB = $('#nBadge'), nLead = $('#nLead'), nName = $('#nName'), nEta = $('#nEta'), card = $('#now');
   if (R) {
     const r = R.route, nx = nextInfo(R), now = Date.now();
     card.style.setProperty('--lc', r.colour);
-    nL.textContent = `${r.lineName}　${dirText(r)}`;
+    nL.textContent = `${r.lineName}・${dirText(r)}`;
     nB.className = 'badge ' + (S.demo ? 'est' : R.mode); nB.textContent = S.demo ? 'デモ' : R.mode === 'gps' ? 'GPS' : '推定';
-    if (nx.k == null) { nLead.textContent = '終点'; nName.textContent = r.stops[r.stops.length - 1].name; nEta.innerHTML = '<span class="sub">到着</span>'; nFoot.textContent = '「降りる」で終了します'; return; }
-    const t = nx.eta[nx.k], st = r.stops[nx.k];
-    nLead.textContent = nx.at != null ? `ただいま ${r.stops[nx.at].name} に停車中・次は` : '次は';
-    nName.textContent = st.name;
+    if (nx.k == null) { nLead.textContent = '終点'; nName.textContent = r.stops[r.stops.length - 1].name; nEta.innerHTML = '<span class="sub">到着</span>'; return; }
+    const t = nx.eta[nx.k], st = r.stops[nx.k], when = hhmm(now + t * 1000);
+    if (nx.at != null) { nLead.textContent = '停車中'; nName.textContent = r.stops[nx.at].name; }
+    else { nLead.textContent = '次は'; nName.textContent = st.name; }
+    const sub = nx.at != null ? `次は${esc(st.name)} ${when}着` : `${when}着・${fmtD(Math.max(0, st.s - R.s))}`;
     nEta.innerHTML = t < 45
-      ? `<span class="t" style="font-size:clamp(24px,7vw,32px)">まもなく</span><span class="when">${hhmm(now + t * 1000)} 着見込み</span>`
-      : `<span class="sub" style="font-size:13px">あと</span><span class="t">${Math.ceil(t / 60)}</span><small class="lab">分</small><span class="when">${hhmm(now + t * 1000)} 着見込み</span>`;
-    nFoot.innerHTML = `<span>${nx.at != null ? '停車中' : '駅まで ' + fmtD(Math.max(0, st.s - R.s))}</span>${dotsOf(st.st)}`;
+      ? `<span class="t" style="font-size:clamp(20px,6vw,26px)">まもなく</span><span class="when">${sub}</span>`
+      : `<span class="sub" style="font-size:12px">あと</span><span class="t">${Math.ceil(t / 60)}</span><small class="lab">分</small><span class="when">${sub}</span>`;
     return;
   }
   card.style.setProperty('--lc', 'var(--faint)');
   nB.className = 'badge' + (S.pos && S.src === 'gps' ? ' gps' : '');
   nB.textContent = S.src === 'manual' ? '手動' : S.pos ? `±${Math.round(S.pos.acc || 0)}m` : 'GPS';
-  nL.textContent = S.loading ? '路線データを読み込み中…' : S.pos ? '現在地付近' : '現在地を確認しています（地図の中心を表示中）';
   const ns = nearbyStations(1)[0];
   nEta.innerHTML = '';
   if (ns) {
+    nL.innerHTML = S.loading ? '路線データを読み込み中…' : `${dotsOf(ns.st)} ${linesOf(ns.st)}`;
     nLead.textContent = '最寄り駅'; nName.textContent = ns.st.name;
-    nEta.innerHTML = `<span class="t" style="font-size:26px">${fmtD(ns.d).replace(/ (m|km)/, '<small class="lab"> $1</small>')}</span>`;
-    nFoot.innerHTML = `${dotsOf(ns.st)}<span>${linesOf(ns.st)}</span>`;
-  } else { nLead.textContent = ''; nName.textContent = S.loading ? '…' : '駅が見つかりません'; nFoot.textContent = S.loading ? '' : '地図を動かすか「遠くの路線」をオンにしてください'; }
+    nEta.innerHTML = `<span class="t">${fmtD(ns.d).replace(/ (m|km)/, '<small class="lab"> $1</small>')}</span>`;
+  } else {
+    nL.textContent = S.loading ? '路線データを読み込み中…' : S.pos ? '地図を動かすか「遠くの路線」をオンにしてください' : '現在地を確認しています（地図の中心を表示中）';
+    nLead.textContent = ''; nName.textContent = S.loading ? '…' : '駅が見つかりません';
+  }
 }
 function renderSheet(force) {
   const B = $('#sbody');
@@ -556,7 +559,7 @@ function onStationTap(st) {
   }
   const rs = [...st.routes].map(id => S.routes.get(id)).filter(r => r && r.stops.findIndex(x => x.st === st) < r.stops.length - 1);
   const seen = new Set(), items = rs.filter(r => { const s = r.key + r.svc + r.to; if (seen.has(s)) return false; seen.add(s); return true; }).slice(0, 10);
-  closePopup();
+  closePopup(); $('#sheet').classList.add('min');
   S.popup = new maplibregl.Popup({ maxWidth: '300px', offset: 14 }).setLngLat([st.lon, st.lat]).setHTML(
     `<div class="pop"><h3>${esc(st.name)}</h3><div class="sub" style="font-size:12px;margin-bottom:4px">この駅から乗る（方面を選択）</div>${items.map(r => {
       const k = r.stops.findIndex(x => x.st === st);
