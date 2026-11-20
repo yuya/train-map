@@ -89,7 +89,7 @@ html.jl:lang(ja) .lab{font-weight:500}
 #sheet{position:fixed;z-index:520;left:0;right:0;bottom:0;max-height:min(52vh,560px);background:var(--card);
   border-radius:20px 20px 0 0;box-shadow:0 -4px 24px rgba(10,20,30,.16);display:flex;flex-direction:column;padding-bottom:var(--sb);transition:max-height .25s}
 #sheet.min{max-height:calc(84px + var(--sb))}
-#grab{height:26px;flex:none;display:grid;place-items:center;width:100%}
+#grab{height:34px;flex:none;display:grid;place-items:center;width:100%;touch-action:none;cursor:grab}
 #grab::before{content:"";width:40px;height:5px;border-radius:9px;background:var(--rule)}
 #sbody{overflow-y:auto;overscroll-behavior:contain;padding:0 16px calc(14px + var(--sb))}
 @media (max-width:899px) and (pointer:coarse){#sbody{padding-bottom:calc(76px + var(--sb))}}
@@ -179,7 +179,7 @@ html.jl:lang(ja) .st .in b{font-weight:700}
 .ttbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:2px 0 6px;font-size:12.5px}
 .chip2{height:32px;border-radius:99px;padding:0 11px;background:var(--rule);font-size:12.5px;white-space:nowrap}
 .chip2.on{background:var(--acc);color:#fff}
-.hd{cursor:pointer}
+#sbody .hd{cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
 .pop h3{font-family:var(--font-d);font-weight:800;font-size:20px;margin:0 0 6px}
 html.jl:lang(ja) .pop h3{font-weight:700}
 .pop .pick{min-height:44px;padding:7px 2px}

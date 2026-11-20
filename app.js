@@ -681,8 +681,36 @@ $('#bFar').addEventListener('click', () => { S.showFar = !S.showFar; LS.set('far
 $('#bFar').setAttribute('aria-pressed', S.showFar);
 $('#bSet').addEventListener('click', () => { const k = ODPT.keys(); $('#odptKey').value = k.std; $('#odptKeyCh').value = k.ch; $('#dlg').hidden = false; });
 $('#dlg').addEventListener('click', e => { if (e.target.id === 'dlg') $('#dlg').hidden = true; });
-$('#sbody').addEventListener('click', e => { if (e.target.closest('.hd') && !e.target.closest('button')) $('#sheet').classList.toggle('min'); });
-$('#grab').addEventListener('click', () => { $('#sheet').classList.toggle('min'); setTimeout(sheetH, 260); });
+/* シートの開閉：つまみ・見出しのタップで切り替え、上下のスワイプで開く／閉じる（指に追従） */
+let sheetDrag = null, dragJustEnded = 0;
+const sheetEl = $('#sheet');
+const isHandle = t => !!t.closest('#grab') || (!!t.closest('#sbody .hd') && !t.closest('button'));
+sheetEl.addEventListener('pointerdown', e => {
+  if (!isHandle(e.target) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  sheetDrag = { id: e.pointerId, y: e.clientY, h: sheetEl.offsetHeight, moved: false };
+});
+addEventListener('pointermove', e => {
+  const d = sheetDrag; if (!d || e.pointerId !== d.id) return;
+  const dy = e.clientY - d.y;
+  if (!d.moved && Math.abs(dy) < 6) return;
+  if (!d.moved) { d.moved = true; sheetEl.style.transition = 'none'; try { sheetEl.setPointerCapture(d.id); } catch (er) {} }
+  const max = Math.min(window.innerHeight * 0.52, 560), min = 84;
+  sheetEl.style.maxHeight = Math.max(min, Math.min(max, d.h - dy)) + 'px';
+  e.preventDefault();
+}, { passive: false });
+function endSheetDrag(e) {
+  const d = sheetDrag; if (!d || e.pointerId !== d.id) return;
+  sheetDrag = null;
+  if (!d.moved) return; // ただのタップは click で処理
+  const dy = e.clientY - d.y;
+  sheetEl.style.transition = ''; sheetEl.style.maxHeight = '';
+  if (dy < -30) sheetEl.classList.remove('min'); else if (dy > 30) sheetEl.classList.add('min');
+  dragJustEnded = Date.now(); setTimeout(sheetH, 260);
+}
+addEventListener('pointerup', endSheetDrag); addEventListener('pointercancel', endSheetDrag);
+const toggleSheet = () => { if (Date.now() - dragJustEnded < 400) return; sheetEl.classList.toggle('min'); setTimeout(sheetH, 260); };
+$('#sbody').addEventListener('click', e => { if (e.target.closest('.hd') && !e.target.closest('button')) toggleSheet(); });
+$('#grab').addEventListener('click', toggleSheet);
 $('#segStyle').addEventListener('click', e => { const b = e.target.closest('button'); b && setStyle(b.dataset.style); });
 function setFont(f) {
   LS.set('font', f); document.documentElement.classList.toggle('jl', f !== 'plex'); document.documentElement.classList.toggle('fj-plex', f === 'plex');
