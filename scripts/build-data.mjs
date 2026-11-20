@@ -124,8 +124,8 @@ for (let i = 0; i < ids.length; i += step) {
       const b = G.buildRoute(r, { nodes, ways, masterOf, nameNear });
       if (!b) continue;
       const chain = G.simplify(b.chain, 4);
-      G.placeStops(chain, b.stops);
-      b.chain = chain; delete b.wayIds;
+      const pl = G.placeStops(chain, b.stops);
+      b.chain = pl.chain; b.approx = b.approx || pl.approx; delete b.wayIds;
       routes.push(b);
     } catch (e) { log('skip', r.id, e.message); }
   }
@@ -164,7 +164,7 @@ for (const r of routes) {
   const enc = G.encodeShape(r.chain), sh = crypto.createHash('sha1').update(enc.join(',')).digest('hex').slice(0, 12);
   if (!shapes.has(sh)) { shapes.add(sh); fs.writeFileSync(path.join(OUT, 's', sh + '.json'), JSON.stringify(enc)); }
   fs.writeFileSync(path.join(OUT, 'r', r.id + '.json'), JSON.stringify({
-    id: r.id, n: r.name, l: r.lineName, k: r.key, c: r.colour, svc: r.svc, to: r.to, kind: r.kind, loop: r.loop, sh,
+    id: r.id, n: r.name, l: r.lineName, k: r.key, c: r.colour, svc: r.svc, to: r.to, kind: r.kind, loop: r.loop, sh, ap: r.approx ? 1 : 0,
     st: r.stops.map(s => [s.sid, s.name, r5(s.lat), r5(s.lon), Math.round(s.s)]),
   }));
   // 線が通る格子に路線IDを登録（約300mおきに標本）

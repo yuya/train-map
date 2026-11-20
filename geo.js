@@ -65,6 +65,23 @@ export function assemble(ways, ids) {
   return out;
 }
 
+/* メンバーの並びが乱れているときの代替：始点から一番近い端点のウェイを順につないでいく */
+export function assembleGreedy(ways, ids, start) {
+  const segs = [...new Set(ids)].map(id => ways.get(id)).filter(a => a && a.length > 1);
+  if (!segs.length) return [];
+  const used = new Uint8Array(segs.length);
+  let best = -1, bd = Infinity, flip = false;
+  segs.forEach((g, i) => { const d0 = dist(start, g[0]), d1 = dist(start, g[g.length - 1]); if (d0 < bd) { bd = d0; best = i; flip = false; } if (d1 < bd) { bd = d1; best = i; flip = true; } });
+  let out = flip ? segs[best].slice().reverse() : segs[best].slice(); used[best] = 1;
+  for (;;) {
+    const e = out[out.length - 1]; let bi = -1, bdd = 150, bf = false;
+    segs.forEach((g, i) => { if (used[i]) return; const d0 = dist(e, g[0]), d1 = dist(e, g[g.length - 1]); if (d0 < bdd) { bdd = d0; bi = i; bf = false; } if (d1 < bdd) { bdd = d1; bi = i; bf = true; } });
+    if (bi < 0) break;
+    used[bi] = 1; const g = bf ? segs[bi].slice().reverse() : segs[bi]; out = out.concat(g.slice(1));
+  }
+  return out;
+}
+
 /* 名前のない停車位置に、近くの駅名を当てる（格子で検索） */
 export function makeNameNear(nodes) {
   const grid = new Map(), K = 0.005;
@@ -92,8 +109,9 @@ export function placeStops(chain, stops) {
     if (dn > up) { chain.reverse(); cum = cumul(chain); place(); [up, dn] = mono(); }
     if (up / (stops.length - 1) < 0.8 || stops.some(st => st.d > 600)) chain = [];
   }
-  if (chain.length < 2) { chain = stops.map(st => [st.lat, st.lon]); cum = cumul(chain); place(); }
-  return { chain, cum };
+  let approx = false;
+  if (chain.length < 2) { chain = stops.map(st => [st.lat, st.lon]); cum = cumul(chain); place(); approx = true; }
+  return { chain, cum, approx };
 }
 
 /* OSM の route リレーション1本 → 路線オブジェクト */
@@ -119,13 +137,17 @@ export function buildRoute(r, { nodes, ways, masterOf, nameNear }) {
     const op = [t['operator:ja'], t.operator, mt['operator:ja'], mt.operator, t['network:ja'], t.network].find(hasJa);
     if (op) lineName = `${op}（${stops[0].name}〜${stops[stops.length - 1].name}）`;
   }
-  const { chain } = placeStops(assemble(ways, wayIds), stops);
+  let { chain, approx } = placeStops(assemble(ways, wayIds), stops);
+  if (approx) { // 並び順が壊れている系統は、駅の位置から線をつなぎ直す
+    const g = placeStops(assembleGreedy(ways, wayIds, [stops[0].lat, stops[0].lon]), stops);
+    if (!g.approx) ({ chain, approx } = g); else placeStops(chain, stops);
+  }
   return {
     id: r.id, name, lineName, key, colour: t.colour || mt.colour || null,
     svc: t.service || (name.match(SERVICE) || [])[0] || '',
     to: cleanName(hasJa(t['to:ja']) ? t['to:ja'] : hasJa(t.to) ? t.to : '') || stops[stops.length - 1].name,
     kind: lineKind(t, name), loop: stops[0].name === stops[stops.length - 1].name,
-    chain, stops, wayIds,
+    chain, stops, wayIds, approx,
   };
 }
 

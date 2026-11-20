@@ -1,5 +1,6 @@
 import * as maplibregl from 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 import * as G from './geo.js';
+import * as ODPT from './odpt.js';
 const { dist, clamp, project, idxAt, pointAt, cumul } = G;
 
 const $ = s => document.querySelector(s);
@@ -117,12 +118,23 @@ function addOverlays() {
   map.addSource('lines', { type: 'geojson', data: EMPTY });
   map.addSource('ride', { type: 'geojson', data: EMPTY });
   const round = { 'line-cap': 'round', 'line-join': 'round' };
+  // 都府県界をはっきり描く（元の細い破線は隠す）
+  if (map.getSource('v')) {
+    for (const l of map.getStyle().layers) if (/都府県界|地方界/.test(l.id)) map.setLayoutProperty(l.id, 'visibility', 'none');
+    const pref = (id, filter, opt) => {
+      map.addLayer({ id: id + '-c', type: 'line', source: 'v', 'source-layer': 'AdmBdry', filter, ...opt, paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 3, 10, 5.5] } });
+      map.addLayer({ id, type: 'line', source: 'v', 'source-layer': 'AdmBdry', filter, ...opt, paint: { 'line-color': S.style === 'std' ? '#5b3a8c' : '#7b6a96', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 1.2, 10, 2.4], 'line-dasharray': [5, 2, 1, 2] } });
+    };
+    pref('pref-lo', ['==', ['get', 'vt_code'], 1212], { maxzoom: 8 });
+    pref('pref-hi', ['==', ['get', 'vt_code'], 1211], { minzoom: 8 });
+  }
   // 乗車中はベースマップ全体に白い膜をかけて、道路などを薄くする（自前の線はその上に描く）
   map.addLayer({ id: 'veil', type: 'background', paint: { 'background-color': '#ffffff', 'background-opacity': veilOpacity(), 'background-opacity-transition': { duration: 400 } } });
   map.addLayer({ id: 'acc-fill', type: 'fill', source: 'acc', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.08 } });
   map.addLayer({ id: 'acc-line', type: 'line', source: 'acc', paint: { 'line-color': '#1a73e8', 'line-width': 1, 'line-opacity': 0.5 } });
-  map.addLayer({ id: 'lines-casing', type: 'line', source: 'lines', layout: round, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': ['case', ['get', 'dim'], 0, 0.95] } });
-  map.addLayer({ id: 'lines-main', type: 'line', source: 'lines', layout: round, paint: { 'line-color': ['get', 'colour'], 'line-width': ['case', ['get', 'dim'], 3, 4.5], 'line-opacity': ['case', ['get', 'dim'], 0.12, 1] } });
+  map.addLayer({ id: 'lines-approx', type: 'line', source: 'lines', filter: ['get', 'ap'], paint: { 'line-color': ['get', 'colour'], 'line-width': 2.5, 'line-dasharray': [2, 2], 'line-opacity': ['case', ['get', 'dim'], 0.12, 0.8] } });
+  map.addLayer({ id: 'lines-casing', type: 'line', source: 'lines', filter: ['!', ['get', 'ap']], layout: round, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': ['case', ['get', 'dim'], 0, 0.95] } });
+  map.addLayer({ id: 'lines-main', type: 'line', source: 'lines', filter: ['!', ['get', 'ap']], layout: round, paint: { 'line-color': ['get', 'colour'], 'line-width': ['case', ['get', 'dim'], 3, 4.5], 'line-opacity': ['case', ['get', 'dim'], 0.12, 1] } });
   map.addLayer({ id: 'ride-casing', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'all'], layout: round, paint: { 'line-color': '#ffffff', 'line-width': 13 } });
   map.addLayer({ id: 'ride-behind', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'behind'], layout: round, paint: { 'line-color': '#9aa3ad', 'line-width': 8 } });
   map.addLayer({ id: 'ride-ahead', type: 'line', source: 'ride', filter: ['==', ['get', 'part'], 'ahead'], layout: round, paint: { 'line-color': ['get', 'colour'], 'line-width': 8 } });
@@ -181,17 +193,19 @@ async function loadTiles(keys) {
     const m = await getJSON(`data/r/${id}.json`); if (!m || S.routes.has(id)) return;
     const sh = await getJSON(`data/s/${m.sh}.json`); if (!sh) return;
     addRoute({
-      id: m.id, name: m.n, lineName: m.l, key: m.k, colour: m.c, svc: m.svc, to: m.to, kind: m.kind, loop: m.loop, shape: m.sh,
+      id: m.id, name: m.n, lineName: m.l, key: m.k, colour: m.c, svc: m.svc, to: m.to, kind: m.kind, loop: m.loop, shape: m.sh, approx: !!m.ap,
       chain: G.decodeShape(sh), stops: m.st.map(([sid, name, lat, lon, s]) => ({ sid, name, lat, lon, s })),
     });
   });
   return [...ids];
 }
+// 近くを通るだけで乗れない路線（例：駅のない区間を通過する新幹線）は「近くの路線」に入れない
+const hasStopNear = (r, lat, lon, m = 3000) => r.stops.some(st => dist([lat, lon], [st.lat, st.lon]) <= m);
 async function loadNearStatic(lat, lon, radius) {
   const dLat = radius / 111000, dLon = radius / (111000 * Math.cos(lat * G.rad));
   const ids = await loadTiles(tileKeys(lat - dLat, lon - dLon, lat + dLat, lon + dLon));
   const near = new Set();
-  for (const id of ids) { const r = S.routes.get(id); if (r && project(r.chain, r.cum, [lat, lon]).d <= radius) near.add(r.key); }
+  for (const id of ids) { const r = S.routes.get(id); if (r && project(r.chain, r.cum, [lat, lon]).d <= radius && hasStopNear(r, lat, lon)) near.add(r.key); }
   return near;
 }
 
@@ -235,7 +249,7 @@ function ingestLive(j) {
 }
 async function loadNearLive(lat, lon, radius) {
   const got = ingestLive(await overpass(railQuery(`(around:${radius},${lat.toFixed(5)},${lon.toFixed(5)})`)));
-  return new Set(got.map(id => S.routes.get(id).key));
+  return new Set(got.map(id => S.routes.get(id)).filter(r => hasStopNear(r, lat, lon, Math.max(3000, radius))).map(r => r.key));
 }
 
 /* ---------- 近くの路線・遠くの路線の読み込み ---------- */
@@ -287,8 +301,13 @@ function drawLines() {
   const rideKey = S.ride && S.ride.route.key, feats = [];
   for (const g of S.groups.values()) {
     if (!groupVisible(g)) continue;
-    if (!g.ll) { const seen = new Set(); g.ll = []; for (const r of g.routes) { const k = r.shape || r.id; if (!seen.has(k)) { seen.add(k); g.ll.push(toLL(r.chain)); } } }
-    feats.push({ type: 'Feature', properties: { colour: g.colour, dim: !!(S.ride && g.key !== rideKey) }, geometry: { type: 'MultiLineString', coordinates: g.ll } });
+    if (!g.ll) {
+      // 線形が壊れていて駅を直線で結んだだけの系統は、ちゃんとした線形がある限り描かない
+      const good = g.routes.filter(r => !r.approx), use = good.length ? good : g.routes, seen = new Set();
+      g.ap = !good.length; g.ll = [];
+      for (const r of use) { const k = r.shape || r.id; if (!seen.has(k)) { seen.add(k); g.ll.push(toLL(r.chain)); } }
+    }
+    feats.push({ type: 'Feature', properties: { colour: g.colour, dim: !!(S.ride && g.key !== rideKey), ap: g.ap }, geometry: { type: 'MultiLineString', coordinates: g.ll } });
   }
   feats.sort((a, b) => b.properties.dim - a.properties.dim); // 薄い線を下に
   src.setData({ type: 'FeatureCollection', features: feats });
@@ -389,8 +408,14 @@ function nextInfo(R) {
   const prevS = r.stops[out.k - 1] ? r.stops[out.k - 1].s : 0, d = Math.max(1, r.stops[out.k].s - prevS), rem = Math.max(0, r.stops[out.k].s - Math.max(R.s, prevS));
   let base = segT(r, d) * rem / d; const v = avgSpeed(10);
   if (R.mode === 'gps' && v > 3 && at == null) base = 0.5 * base + 0.5 * (rem / v + PEN[r.kind] * 0.3 * rem / d);
-  t += base; out.eta[out.k] = t;
-  for (let j = out.k + 1; j < r.stops.length; j++) { t += DWELL[r.kind] + segT(r, r.stops[j].s - r.stops[j - 1].s); out.eta[j] = t; }
+  t += base;
+  const tt = R.tt && R.tt.times;
+  if (tt && tt.has(out.k)) t = Math.max(0, (tt.get(out.k) - now) / 1000);
+  out.eta[out.k] = t;
+  for (let j = out.k + 1; j < r.stops.length; j++) {
+    t = tt && tt.has(j) ? Math.max(t, (tt.get(j) - now) / 1000) : t + DWELL[r.kind] + segT(r, r.stops[j].s - r.stops[j - 1].s);
+    out.eta[j] = t;
+  }
   return out;
 }
 function startRide(r, k) {
@@ -401,8 +426,16 @@ function startRide(r, k) {
   closePopup(); S.follow = true; $('#bLoc').classList.add('on'); $('#sheet').classList.add('min');
   drawLines(); renderSheet(true); rideStep();
   if (LZ() < 14) map.setZoom(13);
+  attachTimetable();
 }
 function endRide() { S.ride = null; stopDemo(); drawLines(); renderSheet(true); renderTop(); updateLabels(); drawMe(); }
+/* 時刻表で、いる駅の発車時刻がまだ来ていなければ停車を続ける */
+function ttHold(R, now) {
+  const tt = R.tt && R.tt.times, c = R.tt && R.tt.c; if (!tt || R.atK == null || !tt.has(R.atK)) return false;
+  const dep = tt.get(R.atK) + (c && R.atK === c.k ? 0 : 30e3);
+  if (dep > now) { R.dwellUntil = Math.max(R.dwellUntil, dep); return true; }
+  return false;
+}
 function rideStep() {
   const R = S.ride; if (!R) return;
   const r = R.route, now = Date.now(), dt = Math.min(10, (now - R.t) / 1000); R.t = now;
@@ -417,12 +450,14 @@ function rideStep() {
     r.stops.forEach((st, i) => { const d = Math.abs(st.s - R.s); if (d < nd) { nd = d; near = i; } });
     if (near != null && v < 1.5) { if (R.atK !== near) { R.atK = near; R.dwellUntil = now + DWELL[r.kind] * 1000; } }
     else if (v > 3) { R.atK = null; R.dwellUntil = 0; }
-  } else if (R.dwellUntil > now) { /* 停車中 */ }
+  } else if (R.dwellUntil > now || ttHold(R, now)) { /* 停車中（時刻表があれば発車時刻まで） */ }
   else {
     if (R.atK != null) { R.s = Math.max(R.s, r.stops[R.atK].s + 16); R.atK = null; }
     const k = nextIdx(r, R.s);
     if (k != null) {
-      const prevS = r.stops[k - 1] ? r.stops[k - 1].s : 0, d = Math.max(1, r.stops[k].s - prevS), v = d / segT(r, d);
+      const prevS = r.stops[k - 1] ? r.stops[k - 1].s : 0, d = Math.max(1, r.stops[k].s - prevS), tt = R.tt && R.tt.times;
+      // 時刻表があれば、次の駅に時刻どおり着く速さで進める
+      const v = tt && tt.has(k) && tt.get(k) > now + 5e3 ? Math.max(0.5, (r.stops[k].s - R.s) / ((tt.get(k) - now) / 1000)) : d / segT(r, d);
       let ns = R.s + v * dt;
       if (ns >= r.stops[k].s) { ns = r.stops[k].s; R.atK = k; R.dwellUntil = now + DWELL[r.kind] * 1000; }
       R.s = ns;
@@ -477,7 +512,8 @@ function renderTop() {
     const r = R.route, nx = nextInfo(R), now = Date.now();
     card.style.setProperty('--lc', r.colour);
     nL.textContent = `${r.lineName}・${dirText(r)}`;
-    nB.className = 'badge ' + (S.demo ? 'est' : R.mode); nB.textContent = S.demo ? 'デモ' : R.mode === 'gps' ? 'GPS' : '推定';
+    const dia = R.tt && R.tt.times && R.tt.times.size > 1;
+    nB.className = 'badge ' + (S.demo ? 'est' : dia ? 'gps' : R.mode); nB.textContent = S.demo ? 'デモ' : dia ? 'ダイヤ' : R.mode === 'gps' ? 'GPS' : '推定';
     if (nx.k == null) { nLead.textContent = '終点'; nName.textContent = r.stops[r.stops.length - 1].name; nEta.innerHTML = '<span class="sub">到着</span>'; return; }
     const t = nx.eta[nx.k], st = r.stops[nx.k], when = hhmm(now + t * 1000);
     if (nx.at != null) { nLead.textContent = '停車中'; nName.textContent = r.stops[nx.at].name; }
@@ -521,9 +557,11 @@ function buildRide() {
   $('#sbody').innerHTML = `<div class="hd" style="position:sticky;top:0;background:var(--card);z-index:3;padding-bottom:4px">
       <div><h2 style="margin-bottom:0">${esc(r.lineName)}</h2><span class="sub" style="font-size:12px">${esc(dirText(r))}・${r.stops.length}駅</span></div>
       <button class="btn" data-act="end">降りる</button></div>
+    <div class="ttbar" id="ttbar"></div>
     <ul class="strip" style="--c:${esc(r.colour)}">${r.stops.map((st, i) => `<li data-k="${i}"><span class="dot"></span><span class="nm d">${esc(st.name)}</span><button class="here" data-act="here" data-k="${i}">ここにいる</button><span class="tm"></span></li>`).join('')}
     <div class="train" id="train"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-4 0-8 .5-8 4v9.5A3.5 3.5 0 0 0 7.5 19L6 20.5v.5h2l2-2h4l2 2h2v-.5L16.5 19a3.5 3.5 0 0 0 3.5-3.5V6c0-3.5-4-4-8-4ZM7.5 17a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Zm9 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3ZM18 10H6V6h12v4Z"/></svg></div></ul>`;
   S.ride.lastK = null;
+  renderTT();
 }
 function renderRide() {
   const R = S.ride; if (!R) return; const r = R.route, nx = nextInfo(R), now = Date.now(), ul = $('#sbody .strip'); if (!ul) return;
@@ -548,6 +586,41 @@ function renderRide() {
     if (R.lastK !== cur && S.follow) { R.lastK = cur; $('#sbody').scrollTo({ top: Math.max(0, y0 - 90), behavior: 'smooth' }); }
   }
   updateLabels();
+}
+
+/* ---------- 時刻表（ODPT） ---------- */
+function renderTT() {
+  const el = $('#ttbar'), R = S.ride; if (!el || !R) return;
+  const T = R.tt;
+  if (!ODPT.configured()) { el.innerHTML = '<span class="sub">時刻表を使うには、設定で ODPT のアクセストークンを入れてください</span>'; return; }
+  if (!T || T.loading) { el.innerHTML = '<span class="sub">時刻表を取得中…</span>'; return; }
+  if (T.msg) { el.innerHTML = `<span class="sub">${esc(T.msg)}（到着時刻は推定）</span>`; return; }
+  el.innerHTML = `<span class="sub">乗っている列車：</span>${T.cands.map((c, i) => `<button class="chip2${c === T.sel ? ' on' : ''}" data-act="tt" data-i="${i}">${esc(c.label)}</button>`).join('')}${T.src ? `<span class="sub" style="font-size:11px">${esc(T.src)}より</span>` : ''}`;
+}
+async function attachTimetable() {
+  const R = S.ride; if (!R || !ODPT.configured()) { renderTT(); return; }
+  R.tt = { loading: true }; renderTT();
+  const r = R.route, k = R.atK != null ? R.atK : (nextIdx(r, R.s) ?? r.stops.length) - 1;
+  const atStation = R.atK != null || (avgSpeed(8) < 1.5 && r.stops.some(st => Math.abs(st.s - R.s) < 120));
+  try {
+    const c = await ODPT.candidates(r, Math.max(0, k), atStation);
+    if (S.ride !== R) return;
+    if (!c.m || !c.cands) { R.tt = { msg: c.reason }; renderTT(); return; }
+    R.tt = { c, cands: c.cands, sel: c.auto }; renderTT();
+    await chooseTrain(c.auto);
+  } catch (e) {
+    console.warn('odpt', e); if (S.ride !== R) return;
+    R.tt = { msg: ODPT.isAuthError(e) ? 'ODPT のアクセストークンが使えませんでした' : '時刻表を取得できませんでした' }; renderTT();
+  }
+}
+async function chooseTrain(dep) {
+  const R = S.ride; if (!R || !R.tt || !R.tt.c) return;
+  R.tt.sel = dep; R.tt.times = null; R.tt.src = ''; renderTT();
+  try {
+    const res = await ODPT.trainTimes(R.route, R.tt.c, dep);
+    if (S.ride !== R || R.tt.sel !== dep) return;
+    R.tt.times = res.times; R.tt.src = res.src; renderTT(); renderTop(); renderRide();
+  } catch (e) { console.warn('odpt', e); }
 }
 
 /* ---------- 地図・リストの連動 ---------- */
@@ -580,6 +653,8 @@ document.addEventListener('click', e => {
   const a = b.dataset.act;
   if (a === 'ride') { const r = S.routes.get(+b.dataset.r); if (r) startRide(r, b.dataset.k != null ? +b.dataset.k : null); }
   else if (a === 'end') endRide();
+  else if (a === 'tt') { const T = S.ride && S.ride.tt; if (T && T.cands) chooseTrain(T.cands[+b.dataset.i]); }
+  else if (a === 'odptsave') { ODPT.setKeys($('#odptKey').value, $('#odptKeyCh').value); toast('ODPT のトークンを保存しました'); if (S.ride) attachTimetable(); }
   else if (a === 'here') {
     e.stopPropagation(); const R = S.ride, i = +b.dataset.k;
     R.s = R.route.stops[i].s; R.atK = i; R.dwellUntil = Date.now() + DWELL[R.route.kind] * 1000; R.sel = null;
@@ -604,8 +679,9 @@ $('#bLoc').addEventListener('click', () => {
 });
 $('#bFar').addEventListener('click', () => { S.showFar = !S.showFar; LS.set('far', S.showFar); $('#bFar').setAttribute('aria-pressed', S.showFar); drawLines(); updateLabels(); renderSheet(true); if (S.showFar) loadFar(); });
 $('#bFar').setAttribute('aria-pressed', S.showFar);
-$('#bSet').addEventListener('click', () => { $('#dlg').hidden = false; });
+$('#bSet').addEventListener('click', () => { const k = ODPT.keys(); $('#odptKey').value = k.std; $('#odptKeyCh').value = k.ch; $('#dlg').hidden = false; });
 $('#dlg').addEventListener('click', e => { if (e.target.id === 'dlg') $('#dlg').hidden = true; });
+$('#sbody').addEventListener('click', e => { if (e.target.closest('.hd') && !e.target.closest('button')) $('#sheet').classList.toggle('min'); });
 $('#grab').addEventListener('click', () => { $('#sheet').classList.toggle('min'); setTimeout(sheetH, 260); });
 $('#segStyle').addEventListener('click', e => { const b = e.target.closest('button'); b && setStyle(b.dataset.style); });
 function setFont(f) {
@@ -622,7 +698,7 @@ $('#segSrc').addEventListener('click', e => { const b = e.target.closest('button
 function setMult(m) { S.demoMult = m; LS.set('mult', m); document.querySelectorAll('#segDemo button').forEach(b => b.setAttribute('aria-pressed', +b.dataset.mult === m)); }
 setMult(S.demoMult);
 $('#segDemo').addEventListener('click', e => { const b = e.target.closest('button'); b && setMult(+b.dataset.mult); });
-map.on('click', e => { if (S.src !== 'manual') return; onPos({ lat: e.lngLat.lat, lon: e.lngLat.lng, acc: 15, speed: 0, t: Date.now() }, true); });
+map.on('click', e => { if (S.src !== 'manual') { $('#sheet').classList.add('min'); return; } onPos({ lat: e.lngLat.lat, lon: e.lngLat.lng, acc: 15, speed: 0, t: Date.now() }, true); });
 map.on('dragstart', unfollow);
 let mvT = null;
 map.on('moveend', () => {

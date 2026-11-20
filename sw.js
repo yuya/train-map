@@ -3,13 +3,13 @@
 //  - 路線データ data/：保存版を優先。meta.json の版が変わったら作り直す
 //  - ベースマップ PMTiles：Range リクエストを範囲ごとに保存（Cache API は 206 を保存できないため 200 に包む）
 //  - 写真タイル・ライブラリ・フォント・地図スタイル：保存版を優先
-const SHELL = 'shell-v3', DATA = 'data', PMT = 'pmtiles-v1', TILES = 'tiles-v2', LIBS = 'libs-v2';
+const SHELL = 'shell-v4', DATA = 'data', PMT = 'pmtiles-v1', TILES = 'tiles-v2', LIBS = 'libs-v2';
 const KEEP = [SHELL, DATA, PMT, TILES, LIBS];
 const TILE_MAX = 3000, PMT_MAX = 8000;
 
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
-    await caches.open(SHELL).then(c => c.addAll(['./', 'index.html', 'app.js', 'geo.js']).catch(() => {}));
+    await caches.open(SHELL).then(c => c.addAll(['./', 'index.html', 'app.js', 'geo.js', 'odpt.js']).catch(() => {}));
     await caches.open(DATA).then(c => c.add('data/meta.json').catch(() => {}));
     await self.skipWaiting();
   })());

@@ -175,6 +175,11 @@ html.jl:lang(ja) .st .in b{font-weight:700}
 #banner .x{width:36px;height:36px;border-radius:50%;color:#fff;font-size:20px;line-height:36px;text-align:center;flex:none}
 @media (min-width:900px){#banner{left:auto;right:76px;bottom:24px;margin:0;width:420px}}
 #segStyle button:disabled{opacity:.4}
+.inp{width:100%;height:44px;border-radius:10px;border:1px solid var(--rule);background:var(--bg);color:var(--ink);font:16px var(--font-u);padding:0 12px;margin:4px 0 8px}
+.ttbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:2px 0 6px;font-size:12.5px}
+.chip2{height:32px;border-radius:99px;padding:0 11px;background:var(--rule);font-size:12.5px;white-space:nowrap}
+.chip2.on{background:var(--acc);color:#fff}
+.hd{cursor:pointer}
 .pop h3{font-family:var(--font-d);font-weight:800;font-size:20px;margin:0 0 6px}
 html.jl:lang(ja) .pop h3{font-weight:700}
 .pop .pick{min-height:44px;padding:7px 2px}
@@ -234,6 +239,13 @@ body.picking #map{cursor:crosshair}
     <div class="grp"><h3>デモ走行（GPSなしで動きを試す）</h3>
       <div class="seg" id="segDemo"><button data-mult="1">等速</button><button data-mult="5">5倍速</button><button data-mult="20">20倍速</button></div>
       <div class="btns"><button class="btn pri" data-act="demo">選択中の路線でデモ開始</button><button class="btn" data-act="demostop">デモ停止</button></div></div>
+    <div class="grp"><h3>時刻表（公共交通オープンデータセンター）</h3>
+      <label class="note" for="odptKey">アクセストークン</label>
+      <input class="inp" id="odptKey" type="password" autocomplete="off" spellcheck="false" placeholder="api.odpt.org 用">
+      <label class="note" for="odptKeyCh">チャレンジ用トークン（小田急などチャレンジ限定データ用・任意）</label>
+      <input class="inp" id="odptKeyCh" type="password" autocomplete="off" spellcheck="false" placeholder="api-challenge.odpt.org 用">
+      <div class="btns"><button class="btn pri" data-act="odptsave">保存</button></div>
+      <p class="note" style="margin:6px 0 0">トークンは<a href="https://developer.odpt.org/" target="_blank" rel="noopener">開発者サイト</a>で登録すると届きます。この端末にだけ保存されます。時刻表のある路線は時刻表から、無い路線は推定で「あと何分」を出します。</p></div>
     <div class="grp"><h3>データ</h3>
       <p class="note" id="dataInfo" style="margin:0 0 8px">路線データを確認しています…</p>
       <button class="btn" data-act="clearcache">保存データを削除して再読み込み</button></div>
