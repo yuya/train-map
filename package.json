@@ -1,0 +1,9 @@
+{
+  "name": "train-map",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-data": "node scripts/build-data.mjs --out data",
+    "serve": "python3 -m http.server 8000"
+  }
+}

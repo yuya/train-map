@@ -19,13 +19,25 @@
 
 位置情報は https（または localhost）で開いたときしか使えません。
 
-- **GitHub Pages**：Settings → Pages で `main` ブランチのルートを公開し、スマホで開きます。
-- **ローカル**：`python3 -m http.server 8000` を実行し、http://localhost:8000 を開きます。設定の「地図をタップして指定」と「デモ走行」で動作を確認できます。
+- **GitHub Pages**：Settings → Pages の Source を **GitHub Actions** にします。`main` へのプッシュで `.github/workflows/pages.yml` が動き、路線データの生成と公開をまとめて行います。
+- **ローカル**：`npm run build-data -- --prefs 13`（東京都だけ）で `data/` を作り、`npm run serve` で http://localhost:8000 を開きます。`data/` が無いときは Overpass API から直接取得する遅いモードで動きます。設定の「地図をタップして指定」と「デモ走行」でも動作を確認できます。
+
+## しくみ（読み込みを軽くする工夫）
+
+- **路線データは事前に生成**：`scripts/build-data.mjs` が GitHub Actions 上で全国の鉄道路線（OpenStreetMap の route リレーション）を取得し、静的ファイルに変換します。
+  - 月1回作り直し、それ以外のデプロイではキャッシュを使い回します。
+  - 生成に失敗したときは、前回のデータのまま公開を続けます。
+  - 手動で作り直すときは、Actions の「Run workflow」で `rebuild` にチェックを入れます。
+- **ファイルの分け方**：
+  - `data/t/{x}_{y}.json`：約5km四方の格子ごとに、通る路線と駅の一覧。
+  - `data/r/{id}.json`：系統ごとの停車駅。
+  - `data/s/{hash}.json`：線形。同じ線形は共有し、間引いて差分で符号化しています。
+- **端末への保存**：`sw.js`（Service Worker）が、一度見た地域の路線データ・地図タイル・ライブラリ・フォントを保存します。次回からは通信なしで表示でき、地下や圏外でも地図が出ます。路線データの版が変わったときだけ取り直します。
 
 ## データと注意
 
 - **地図**：[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)（標準／淡色／写真）。
-- **路線・駅**：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)。[Overpass API](https://overpass-api.de/) から実行時に取得します。路線データの抜けや乱れは OpenStreetMap の登録内容によります。
+- **路線・駅**：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（ODbL）。路線データの抜けや乱れは OpenStreetMap の登録内容によります。
 - **到着時刻**：駅間距離・種別・GPS の速度から推定しています。公式の時刻表や運行情報ではなく、遅延も反映しません。
 
 ## フォント

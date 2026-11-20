@@ -1,0 +1,82 @@
+name: Build data & deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 18 1 * *'   # 毎月2日 03:17 JST に路線データを作り直す
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: '路線データを強制的に作り直す'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Month key
+        id: month
+        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      # 路線データは月に1回だけ作る（コードの更新では作り直さない）
+      - name: Restore rail data
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/build-data.mjs') }}
+          restore-keys: |
+            rail-data-${{ steps.month.outputs.ym }}-
+            rail-data-
+
+      - name: Build rail data from OpenStreetMap
+        id: build
+        if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'schedule' || inputs.rebuild
+        continue-on-error: true   # 失敗しても前回のデータで公開を続ける
+        run: node scripts/build-data.mjs --out data-new && rm -rf data && mv data-new data
+
+      - name: Save rail data
+        if: steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: rail-data-${{ steps.month.outputs.ym }}-${{ hashFiles('geo.js', 'scripts/build-data.mjs') }}
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp index.html app.js geo.js sw.js _site/
+          cp -r data _site/data
+          touch _site/.nojekyll
+          du -sh _site/data && ls _site/data/t | wc -l
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
