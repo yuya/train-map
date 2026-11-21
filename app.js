@@ -646,10 +646,16 @@ function identify(e) {
       title = d.title; sub = d.sub || '';
       if (d.kind === 'road' && (title === '国道' || title === '都道府県道' || title === '主要地方道' || title === '高速道路')) {
         // 近くに出ている路線番号の表示から番号を拾う
-        const R = 220, nums = map.queryRenderedFeatures([[e.point.x - R, e.point.y - R], [e.point.x + R, e.point.y + R]], { layers: ['注記道路番号'].filter(id => map.getLayer(id)) });
-        const want = title === '国道' ? [2901] : title === '高速道路' ? [7701] : [2903, 2904];
+        // 種類と番号の形が合うものだけ使う：高速道路は「E1」「C4」などの英字つき、国道・県道は数字だけ（国道は国道番号の注記）
+        const R = 150, nums = map.queryRenderedFeatures([[e.point.x - R, e.point.y - R], [e.point.x + R, e.point.y + R]], { layers: ['注記道路番号'].filter(id => map.getLayer(id)) });
+        const fits = n => {
+          const t = String(n.properties.vt_text || ''), c = +n.properties.vt_code;
+          if (title === '高速道路') return /^[A-Z]{1,2}\d/.test(t);
+          if (!/^\d+$/.test(t)) return false;
+          return title === '国道' ? c === 2901 : c !== 2901;
+        };
         let best = null, bd = Infinity;
-        for (const n of nums) { if (!want.includes(+n.properties.vt_code) || n.geometry.type !== 'Point') continue; const pt = map.project(n.geometry.coordinates); const dd = Math.hypot(pt.x - e.point.x, pt.y - e.point.y); if (dd < bd) { bd = dd; best = n; } }
+        for (const n of nums) { if (n.geometry.type !== 'Point' || !fits(n)) continue; const pt = map.project(n.geometry.coordinates); const dd = Math.hypot(pt.x - e.point.x, pt.y - e.point.y); if (dd < bd) { bd = dd; best = n; } }
         if (best && best.properties.vt_text) title = title === '国道' ? `国道${best.properties.vt_text}号` : title === '高速道路' ? `高速道路（${best.properties.vt_text}）` : `${title}${best.properties.vt_text}号`;
       }
     }
