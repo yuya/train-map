@@ -45,10 +45,13 @@ const startView = LS.get('view2', null) || (v => (v ? { c: v.c, z: v.z - 1 } : n
 const map = new maplibregl.Map({
   container: 'map', style: BLANK_STYLE,
   center: startView ? [startView.c[1], startView.c[0]] : [139.7671, 35.6812], zoom: startView ? startView.z : 13,
-  minZoom: 4, maxZoom: 18.5, dragRotate: false, pitchWithRotate: false, touchPitch: false, attributionControl: false,
+  minZoom: 4, maxZoom: 18.5, dragRotate: true, pitchWithRotate: false, touchPitch: false, maxPitch: 0, attributionControl: false,
   localIdeographFontFamily: "'Hiragino Sans','Hiragino Kaku Gothic ProN','Noto Sans JP','Yu Gothic',sans-serif",
 });
-map.touchZoomRotate.disableRotation();
+// 二本指で回転できる。回転したら方位ボタンを出し、押すと北が上に戻る
+const compass = () => { const b = $('#bNorth'), r = map.getBearing(); b.hidden = Math.abs(r) < 0.5; b.querySelector('svg').style.transform = `rotate(${-r}deg)`; };
+map.on('rotate', compass);
+$('#bNorth').addEventListener('click', () => map.easeTo({ bearing: 0, duration: 400 }));
 map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: RAIL_ATTR }), 'bottom-left');
 const LZ = () => map.getZoom() + 1;
 map.once('load', () => { const a = document.querySelector('.maplibregl-ctrl-attrib'); a && a.classList.remove('maplibregl-compact-show'); }); // 旧版と同じ感覚のズーム値（しきい値の判定用）
