@@ -304,13 +304,16 @@ function drawLines() {
   const rideKey = S.ride && S.ride.route.key, feats = [];
   for (const g of S.groups.values()) {
     if (!groupVisible(g)) continue;
+    if (g.ll && g.ap && g.key !== rideKey) continue;
     if (!g.ll) {
       // 線形が壊れていて駅を直線で結んだだけの系統は、ちゃんとした線形がある限り描かない
       const good = g.routes.filter(r => !r.approx), use = good.length ? good : g.routes, seen = new Set();
       g.ap = !good.length; g.ll = [];
       for (const r of use) { const k = r.shape || r.id; if (!seen.has(k)) { seen.add(k); g.ll.push(toLL(r.chain)); } }
     }
-    feats.push({ type: 'Feature', properties: { colour: g.colour, dim: !!(S.ride && g.key !== rideKey), ap: g.ap }, geometry: { type: 'MultiLineString', coordinates: g.ll } });
+    // 線形が壊れていて駅を直線で結ぶしかない系統（ロマンスカーの愛称系統など）は、乗車中でなければ描かない
+    if (g.ap && g.key !== rideKey) continue;
+    feats.push({ type: 'Feature', properties: { colour: g.colour, dim: !!(S.ride && g.key !== rideKey), ap: g.ap, name: g.name }, geometry: { type: 'MultiLineString', coordinates: g.ll } });
   }
   feats.sort((a, b) => b.properties.dim - a.properties.dim); // 薄い線を下に
   src.setData({ type: 'FeatureCollection', features: feats });
@@ -591,6 +594,72 @@ function renderRide() {
   updateLabels();
 }
 
+/* ---------- 地図の線をタップしたら、それが何かを出す ---------- */
+let infoPop = null, infoT = null;
+const TUNNEL = [2703, 2713, 2723, 2733];
+function describe(f) {
+  const p = f.properties || {}, sl = f.sourceLayer;
+  if (sl === 'RdCL') {
+    const cat = { 高速自動車国道等: '高速道路', 主要道路: '主要地方道', 市区町村道等: '市区町村道など', その他: '道路', 不明: '道路' }[p.vt_rdctg] || p.vt_rdctg || '道路';
+    const bits = [];
+    if (String(p.vt_motorway) === '1' && cat !== '高速道路') bits.push('自動車専用道路');
+    if (TUNNEL.includes(+p.vt_code)) bits.push('トンネル');
+    if (p.vt_rnkwidth && p.vt_rnkwidth !== '不明') bits.push('幅 ' + p.vt_rnkwidth);
+    return { kind: 'road', title: cat, sub: bits.join('・') };
+  }
+  if (sl === 'RailCL' || sl === 'RailTrCL') {
+    const bits = [p.vt_rtcode === 'JR' ? 'JR' : p.vt_rtcode, p.vt_sngldbl, p.vt_railstate !== '通常部' ? p.vt_railstate : ''].filter(x => x && x !== '駅部分' && x !== '不明');
+    return { title: sl === 'RailTrCL' ? '軌道（路面電車など）' : '鉄道', sub: bits.join('・') };
+  }
+  if (sl === 'AdmBdry') {
+    const c = +p.vt_code, low = map.getZoom() < 8;
+    return { title: c === 1211 || (c === 1212 && low) ? '都府県の境界' : c === 1212 ? '市区町村の境界' : c === 1221 ? '所属界（島などの所属を示す線）' : '行政界' };
+  }
+  if (sl === 'Cntr') return { title: '等高線', sub: p.vt_alti != null ? `標高 ${p.vt_alti} m` : '' };
+  if (sl === 'RvrCL') return { title: '川' };
+  if (sl === 'WL' || sl === 'Cstline') return { title: sl === 'Cstline' ? '海岸線' : '水辺の線（川・湖の岸）' };
+  if (sl === 'PwrTrnsmL') return { title: '送電線' };
+  if (sl === 'TpgphLine') return { title: '崖などの地形' };
+  if (sl === 'RdCompt' || sl === 'RdEdg') return { title: '道路の縁・分離帯' };
+  if (sl === 'SpcfArea') return { title: '特定地区の境界（公園・空港など）' };
+  if (sl === 'StrctLine' || sl === 'WStrL') return { title: '構造物（堤防・桟橋など）' };
+  return null;
+}
+const ORDER = ['RailCL', 'RailTrCL', 'RdCL', 'AdmBdry', 'RvrCL', 'Cstline', 'WL', 'PwrTrnsmL', 'TpgphLine', 'SpcfArea', 'StrctLine', 'WStrL', 'RdCompt', 'RdEdg', 'Cntr'];
+function identify(e) {
+  if (infoPop) { infoPop.remove(); infoPop = null; }
+  const box = [[e.point.x - 10, e.point.y - 10], [e.point.x + 10, e.point.y + 10]];
+  let title = '', sub = '', dots = '';
+  // 1) アプリが描いた路線
+  const mine = map.queryRenderedFeatures(box, { layers: ['ride-ahead', 'ride-behind', 'lines-main'].filter(id => map.getLayer(id)) });
+  if (mine.length) {
+    const seen = new Map();
+    for (const f of mine) { const n = f.properties.name || (S.ride && S.ride.route.lineName); if (n && !seen.has(n)) seen.set(n, f.properties.colour); }
+    if (seen.size) { title = [...seen.keys()].slice(0, 3).join('・'); dots = [...seen.values()].slice(0, 3).map(c => `<i style="--c:${esc(c)}"></i>`).join(''); sub = '路線（タップした位置を通る線）'; }
+  }
+  // 2) 地図の線
+  if (!title && map.getSource('v')) {
+    const fs = map.queryRenderedFeatures(box).filter(f => f.source === 'v' && ORDER.includes(f.sourceLayer));
+    fs.sort((a, b) => ORDER.indexOf(a.sourceLayer) - ORDER.indexOf(b.sourceLayer));
+    const d = fs.length && describe(fs[0]);
+    if (d) {
+      title = d.title; sub = d.sub || '';
+      if (d.kind === 'road' && (title === '国道' || title === '都道府県道' || title === '主要地方道' || title === '高速道路')) {
+        // 近くに出ている路線番号の表示から番号を拾う
+        const R = 220, nums = map.queryRenderedFeatures([[e.point.x - R, e.point.y - R], [e.point.x + R, e.point.y + R]], { layers: ['注記道路番号'].filter(id => map.getLayer(id)) });
+        const want = title === '国道' ? [2901] : title === '高速道路' ? [7701] : [2903, 2904];
+        let best = null, bd = Infinity;
+        for (const n of nums) { if (!want.includes(+n.properties.vt_code) || n.geometry.type !== 'Point') continue; const pt = map.project(n.geometry.coordinates); const dd = Math.hypot(pt.x - e.point.x, pt.y - e.point.y); if (dd < bd) { bd = dd; best = n; } }
+        if (best && best.properties.vt_text) title = title === '国道' ? `国道${best.properties.vt_text}号` : title === '高速道路' ? `高速道路（${best.properties.vt_text}）` : `${title}${best.properties.vt_text}号`;
+      }
+    }
+  }
+  if (!title) return;
+  infoPop = new maplibregl.Popup({ closeButton: false, className: 'info', offset: 10, maxWidth: '260px' }).setLngLat(e.lngLat)
+    .setHTML(`<div class="infoP">${dots ? `<span class="dots">${dots}</span>` : ''}<b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>`).addTo(map);
+  clearTimeout(infoT); infoT = setTimeout(() => { if (infoPop) { infoPop.remove(); infoPop = null; } }, 5000);
+}
+
 /* ---------- 時刻表（ODPT） ---------- */
 function renderTT() {
   const el = $('#ttbar'), R = S.ride; if (!el || !R) return;
@@ -733,7 +802,7 @@ $('#segSrc').addEventListener('click', e => { const b = e.target.closest('button
 function setMult(m) { S.demoMult = m; LS.set('mult', m); document.querySelectorAll('#segDemo button').forEach(b => b.setAttribute('aria-pressed', +b.dataset.mult === m)); }
 setMult(S.demoMult);
 $('#segDemo').addEventListener('click', e => { const b = e.target.closest('button'); b && setMult(+b.dataset.mult); });
-map.on('click', e => { if (S.src !== 'manual') { $('#sheet').classList.add('min'); return; } onPos({ lat: e.lngLat.lat, lon: e.lngLat.lng, acc: 15, speed: 0, t: Date.now() }, true); });
+map.on('click', e => { if (S.src !== 'manual') { $('#sheet').classList.add('min'); identify(e); return; } onPos({ lat: e.lngLat.lat, lon: e.lngLat.lng, acc: 15, speed: 0, t: Date.now() }, true); });
 map.on('dragstart', unfollow);
 let mvT = null;
 map.on('moveend', () => {
@@ -832,4 +901,4 @@ $('#dataInfo').textContent = S.meta
   ? `路線データ：${new Date(S.meta.v).toLocaleDateString('ja-JP')} 作成（${S.meta.routes.toLocaleString()}系統・${S.meta.stations.toLocaleString()}駅）。一度見た地域は端末に保存され、次回から通信なしで表示します。`
   : '路線データ：事前生成データが見つからないため、OpenStreetMap（Overpass API）から直接取得しています（時間がかかります）。';
 setTimeout(() => { if (!S.nearCenter && !nearBusy) { const c = map.getCenter(); loadNear(c.lat, c.lng); } }, S.pos ? 0 : 4000);
-window.__S = S; window.__map = map;
+window.__S = S; window.__map = map; window.__identify = identify;

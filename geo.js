@@ -56,12 +56,14 @@ export function assemble(ways, ids) {
     const s1 = segs[1], e0 = out[out.length - 1];
     if (!(touch(e0, s1[0]) || touch(e0, s1[s1.length - 1])) && (touch(out[0], s1[0]) || touch(out[0], s1[s1.length - 1]))) out.reverse();
   }
+  let gap = 0; // つながらなかった継ぎ目の距離の合計（大きいと線形が飛び飛び）
   for (let i = 1; i < segs.length; i++) {
     const g = segs[i], e = out[out.length - 1];
     if (touch(e, g[0])) out = out.concat(g.slice(1));
     else if (touch(e, g[g.length - 1])) out = out.concat(g.reverse().slice(1));
-    else { if (dist(e, g[g.length - 1]) < dist(e, g[0])) g.reverse(); out = out.concat(g); }
+    else { if (dist(e, g[g.length - 1]) < dist(e, g[0])) g.reverse(); gap += dist(e, g[0]); out = out.concat(g); }
   }
+  out.gap = gap;
   return out;
 }
 
@@ -137,10 +139,13 @@ export function buildRoute(r, { nodes, ways, masterOf, nameNear }) {
     const op = [t['operator:ja'], t.operator, mt['operator:ja'], mt.operator, t['network:ja'], t.network].find(hasJa);
     if (op) lineName = `${op}（${stops[0].name}〜${stops[stops.length - 1].name}）`;
   }
-  let { chain, approx } = placeStops(assemble(ways, wayIds), stops);
-  if (approx) { // 並び順が壊れている系統は、駅の位置から線をつなぎ直す
+  const asm = assemble(ways, wayIds), gappy = (asm.gap || 0) > 1000;
+  let { chain, approx } = placeStops(asm, stops);
+  if (approx || gappy) { // 並び順が壊れている・線形が飛び飛びの系統は、駅の位置から線をつなぎ直す
     const g = placeStops(assembleGreedy(ways, wayIds, [stops[0].lat, stops[0].lon]), stops);
-    if (!g.approx) ({ chain, approx } = g); else placeStops(chain, stops);
+    if (!g.approx) ({ chain, approx } = g);
+    else if (gappy) { chain = stops.map(st => [st.lat, st.lon]); placeStops(chain, stops); approx = true; }
+    else placeStops(chain, stops);
   }
   return {
     id: r.id, name, lineName, key, colour: t.colour || mt.colour || null,
